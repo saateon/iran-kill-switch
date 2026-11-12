@@ -1,0 +1,7 @@
+# machine state and build output - never committed
+app/state/
+app/bin/
+app/IranKillSwitch.exe
+dist/
+*.log
+*.tmp
