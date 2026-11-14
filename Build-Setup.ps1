@@ -6,10 +6,16 @@
     powershell -ExecutionPolicy Bypass -File Build-Setup.ps1             # tests first, then build
     powershell -ExecutionPolicy Bypass -File Build-Setup.ps1 -SkipTests  # build only
 
+  Code signing (optional; removes the "unknown publisher" warning once the certificate has a reputation):
+    Build-Setup.ps1 -CertThumbprint <thumbprint>              # certificate in Cert:\CurrentUser\My or LocalMachine\My
+    Build-Setup.ps1 -CertPfx cert.pfx                         # password from $env:IKS_SIGN_PASSWORD (asked if empty)
+    or set $env:IKS_SIGN_PFX / $env:IKS_SIGN_THUMBPRINT. Signing is checked; a failed signature stops the build.
+
   Uses only what ships with Windows: the .NET Framework C# compiler and System.IO.Compression.
   Nothing is written if the tests fail.
 #>
-param([switch]$SkipTests)
+param([switch]$SkipTests, [string]$CertThumbprint = $env:IKS_SIGN_THUMBPRINT, [string]$CertPfx = $env:IKS_SIGN_PFX,
+      [string]$TimestampServer = 'http://timestamp.digicert.com')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $app = Join-Path $root 'app'
@@ -63,6 +69,21 @@ try {
     $null = $cp.EmbeddedResources.Add($zip)
     $code = ([IO.File]::ReadAllText((Join-Path $root 'installer\SetupApp.cs'))).Replace('__IKS_VERSION__', $ver)
     Add-Type -TypeDefinition $code -CompilerParameters $cp
+
+    if ($CertThumbprint -or $CertPfx) {
+        if ($CertPfx) {
+            $pw = $env:IKS_SIGN_PASSWORD
+            $sec = if ($pw) { ConvertTo-SecureString $pw -AsPlainText -Force } else { Read-Host 'PFX password' -AsSecureString }
+            $cert = Get-PfxCertificate -FilePath $CertPfx -Password $sec
+        } else {
+            $cert = @(Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Thumbprint -eq $CertThumbprint.Replace(' ', '').ToUpper() })[0]
+        }
+        if (-not $cert -or -not $cert.HasPrivateKey) { Remove-Item $out -Force; throw 'Code signing certificate (with private key) not found - installer NOT built.' }
+        $sig = Set-AuthenticodeSignature -FilePath $out -Certificate $cert -HashAlgorithm SHA256 -TimestampServer $TimestampServer
+        if ($sig.Status -ne 'Valid') { Remove-Item $out -Force; throw "Signing failed ($($sig.Status): $($sig.StatusMessage)) - installer NOT built." }
+        Write-Host "Signed: $($cert.Subject)" -ForegroundColor Green
+    } else { Write-Host 'Not signed (no certificate given): Windows SmartScreen may warn on first run.' -ForegroundColor Yellow }
 
     $fi = Get-Item $out
     $hash = (Get-FileHash $out -Algorithm SHA256).Hash

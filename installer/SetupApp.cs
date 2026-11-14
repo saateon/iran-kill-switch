@@ -65,6 +65,7 @@ public static class Installer
             File.WriteAllText(script,
                 "$ErrorActionPreference = 'Continue'\r\n" +
                 "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match 'IKS\\.Gui\\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\r\n" +
+                "Get-Process IranKillSwitch -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '" + InstalledExe.Replace("'", "''") + "' } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; $null = $_.WaitForExit(5000) }\r\n" +
                 "& '" + Path.Combine(pkg, @"app\IKS.ps1").Replace("'", "''") + "' -Action Install\r\n" +
                 "exit $LASTEXITCODE\r\n");
             string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");

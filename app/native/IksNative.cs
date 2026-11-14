@@ -306,4 +306,17 @@ namespace IKS.Native
             finally { FreeMibTable(t); }
         }
     }
+
+    // ---------------------------------------------------------------- WinINet
+    public static class Inet
+    {
+        [DllImport("wininet.dll", SetLastError = true)] static extern bool InternetSetOption(IntPtr h, int option, IntPtr buffer, int length);
+        // Tells running programs that the proxy settings changed (39 = SETTINGS_CHANGED, 37 = REFRESH)
+        public static bool Refresh()
+        {
+            bool a = InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0);
+            bool b = InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0);
+            return a && b;
+        }
+    }
 }

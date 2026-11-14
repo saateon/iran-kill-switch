@@ -46,10 +46,25 @@ function New-IKSDnsQuery([string]$Name) {
     return $q.ToArray()
 }
 
-function Resolve-IKSIPv4([string]$Name) {
-    try { return @([Net.Dns]::GetHostAddresses($Name) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { $_.IPAddressToString }) }
-    catch { return @() }
+# All names at once, with one shared time limit: a blocked DNS can otherwise hang ~15 s per name.
+function Resolve-IKSIPv4Many([string[]]$Names, [int]$Ms = 3000) {
+    $pending = @{}
+    foreach ($n in $Names) { try { $pending[$n] = [Net.Dns]::BeginGetHostAddresses($n, $null, $null) } catch { } }
+    $end = (Get-Date).AddMilliseconds($Ms)
+    $out = @{}
+    foreach ($n in $Names) {
+        $out[$n] = @()
+        $ar = $pending[$n]
+        if (-not $ar) { continue }
+        $left = [Math]::Max(0, [int]($end - (Get-Date)).TotalMilliseconds)
+        if ($ar.AsyncWaitHandle.WaitOne($left)) {
+            try { $out[$n] = @([Net.Dns]::EndGetHostAddresses($ar) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { $_.IPAddressToString }) } catch { }
+        }
+    }
+    return $out
 }
+
+function Resolve-IKSIPv4([string]$Name) { return @((Resolve-IKSIPv4Many @($Name))[$Name]) }
 
 function Invoke-IKSTest {
     $res = New-Object System.Collections.Generic.List[object]
@@ -60,6 +75,8 @@ function Invoke-IKSTest {
     $s = Read-IKSSettings
     $known = @($s.EndpointCache | ForEach-Object { $_.Ip })          # user-allowed servers are not leaks
     $phys = Get-IKSPhysicalInterface
+    $iranSites = 'www.aparat.com', 'www.digikala.com', 'www.varzesh3.com', 'www.shaparak.ir'
+    $dns = Resolve-IKSIPv4Many (@($iranSites) + 'stun.l.google.com')     # in parallel, max 3 s in total
 
     # 1. protection installed and active
     if ($st.Enabled -and $st.Filters -gt 0) { & $add 'Kill switch active' 'PASS' "$($st.Filters) WFP filters active" }
@@ -82,8 +99,8 @@ function Invoke-IKSTest {
 
     # 3. Iranian site directly from the real NIC
     $ok = $false; $detail = 'No Iranian test site resolved to an Iranian IP.'
-    foreach ($site in 'www.aparat.com', 'www.digikala.com', 'www.varzesh3.com', 'www.shaparak.ir') {
-        $ip = Resolve-IKSIPv4 $site | Where-Object { Test-IKSInRanges $_ $iran } | Select-Object -First 1
+    foreach ($site in $iranSites) {
+        $ip = $dns[$site] | Where-Object { Test-IKSInRanges $_ $iran } | Select-Object -First 1
         if (-not $ip) { continue }
         $r = Test-IKSTcp $src $ip 443
         $detail = "$site ($ip): $($r.Why) via $($phys.Alias)"
@@ -97,7 +114,7 @@ function Invoke-IKSTest {
     & $add 'DNS leak' $(if ($r.Answered) { 'FAIL' } else { 'PASS' }) "foreign DNS $dnsT outside VPN: $($r.Why)"
 
     # 5. WebRTC leak: a STUN answer outside the tunnel would reveal the real IP
-    $stun = (Resolve-IKSIPv4 'stun.l.google.com') | Where-Object { -not (Test-IKSInRanges $_ $iran) } | Select-Object -First 1
+    $stun = $dns['stun.l.google.com'] | Where-Object { -not (Test-IKSInRanges $_ $iran) } | Select-Object -First 1
     if ($stun) {
         $pkt = [byte[]](@(0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42) + @(1..12 | ForEach-Object { Get-Random -Maximum 256 }))
         $r = Test-IKSUdp $src $stun 19302 $pkt
@@ -128,12 +145,19 @@ function Invoke-IKSTest {
     if ($st.VpnMode -eq 'none') { & $add 'Internet through VPN' 'SKIP' 'VPN not connected - connect it and test again.' }
     else {
         try {
-            $p = @{ Uri = 'https://api.ipify.org'; UseBasicParsing = $true; TimeoutSec = 15 }
+            $p = @{ Uri = 'https://api.ipify.org'; UseBasicParsing = $true; TimeoutSec = 8 }
             if ($st.VpnMode -eq 'proxy') { $p.Proxy = $st.Proxy }
             $ip = "$((Invoke-WebRequest @p).Content)".Trim()
             if (Test-IKSInRanges $ip $iran) { & $add 'Internet through VPN' 'FAIL' "Public IP $ip is Iranian: traffic is NOT using the VPN." }
             else { & $add 'Internet through VPN' 'PASS' "Foreign sites see $ip ($($st.VpnMode) mode)" }
         } catch { & $add 'Internet through VPN' 'FAIL' "VPN looks connected but a foreign site failed: $($_.Exception.Message)" }
+    }
+
+    # 9. Proxy mode only works for programs that use the proxy: Windows must be set to use it
+    if ($st.VpnMode -eq 'proxy') {
+        $sys = Get-IKSSystemProxy
+        if ($sys.Enabled -or $sys.Pac) { & $add 'Browsers use the VPN' 'PASS' "Windows proxy: $(if ($sys.Pac) { $sys.Pac } else { $sys.Server })" }
+        else { & $add 'Browsers use the VPN' 'FAIL' "Your VPN runs only as a local proxy ($($st.Proxy -replace 'http://', '')) and Windows is not set to use it, so browsers go direct and are blocked. In your VPN app choose 'System proxy' or 'VPN / TUN' mode." }
     }
     return $res
 }

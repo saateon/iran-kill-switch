@@ -80,7 +80,15 @@ public static class Launcher {
 }
 '@
     $code = $code.Replace('__IKS_VERSION__', $script:IKS.Version)
-    if (Test-Path $exe) { Remove-Item $exe -Force }
+    # An open app window (or its tray icon) locks the exe: close it first. A running exe can
+    # still be renamed when it cannot be deleted, so move it aside as a last resort.
+    Get-ChildItem $Root -Filter 'IranKillSwitch.exe.old*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (Test-Path $exe) {
+        Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and "$(try { $_.Path } catch { '' })" -eq $exe } |
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; $_.WaitForExit(5000) | Out-Null }
+        try { Remove-Item $exe -Force -ErrorAction Stop }
+        catch { Move-Item $exe ('{0}.old{1}' -f $exe, [DateTime]::Now.Ticks) -Force }
+    }
     $cp = New-Object System.CodeDom.Compiler.CompilerParameters
     $cp.GenerateExecutable = $true
     $cp.OutputAssembly = $exe

@@ -29,6 +29,7 @@ No. The tool uses its own WFP sublayer; Windows Firewall rules and profiles stay
 | WSL2 / Hyper-V virtual machines | their NAT traffic is forwarded by Windows and not covered |
 | VPNs with their own kill switch | e.g. WireGuard's "block untunneled traffic" also blocks Iran direct; turn that option off, this tool replaces it |
 | Android VPNs inside BlueStacks | the kill switch works; Iran direct must be configured inside that VPN |
-| Proxy-only (System Proxy) mode | the kill switch works; Iran direct needs the VPN client's own Iran rules |
+| Proxy-only (System Proxy) mode | the kill switch works; Iran direct needs the VPN client's own Iran rules (Hiddify: Region = Iran); direct sites use the Windows "no proxy" list while the app runs |
+| Direct sites | only the listed name and its `www.` twin; subdomains are not discovered; CDN addresses are shared with other sites |
 | Iranian sites hosted abroad | they have no Iranian IP, so they go through the VPN (they still open) |
 | Code signing | the installer is unsigned; SmartScreen may ask once |

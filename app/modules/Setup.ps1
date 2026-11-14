@@ -89,6 +89,7 @@ function Invoke-IKSUninstall([switch]$RestoreOriginal) {
         try { $null = Remove-IKSFilters } catch { }
     }
     try { $s = Read-IKSSettings; $null = Remove-IKSLegacy $s } catch { }
+    try { $null = Sync-IKSProxyBypass $false; Remove-Item 'HKCU:\Software\IranKillSwitch' -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     Unregister-IKSTask $script:IKS.GuardTask
     Unregister-IKSTask $script:IKS.RevertTask
     $keep = Join-Path $env:ProgramData 'IranKillSwitch-backup'
@@ -104,6 +105,16 @@ function Invoke-IKSUninstall([switch]$RestoreOriginal) {
     Remove-Item (Get-IKSDesktopLink) -Force -ErrorAction SilentlyContinue
     Remove-Item 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\IranKillSwitch' -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $script:IKS.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $script:IKS.InstallDir) {
+        # Uninstall from the app: its own exe (and the loaded native dll) are still in use.
+        # A hidden helper waits until the app has closed, then removes what is left.
+        $dir = $script:IKS.InstallDir.Replace("'", "''")
+        $cmd = "Wait-Process -Name IranKillSwitch -Timeout 900 -ErrorAction SilentlyContinue; Start-Sleep 2; " +
+               "for (`$i = 0; `$i -lt 10 -and (Test-Path '$dir'); `$i++) { Remove-Item '$dir' -Recurse -Force -ErrorAction SilentlyContinue; Start-Sleep 3 }"
+        Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -WindowStyle Hidden -WorkingDirectory $env:SystemRoot `
+            -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $cmd
+        $msg += 'The program folder is removed when the app closes.'
+    }
     $left = Get-IKSFilterCount
     $msg += "Uninstalled. Filters left: $(if ($left -lt 0) { 'unknown' } else { $left })."
     $msg -join ' '

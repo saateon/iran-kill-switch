@@ -3,6 +3,7 @@
 function Update-IKSInputs($Settings, [switch]$NoScan) {
     Update-IKSVpnApps $Settings -NoScan:$NoScan
     Update-IKSEndpoints $Settings
+    Update-IKSDirectSites $Settings
     Update-IKSLearnedTunnels $Settings
 }
 
@@ -56,6 +57,21 @@ function Invoke-IKSDisable([switch]$FromRevertTask) {
     }
 }
 
+# The checks after "Turn ON" can take a long time on a slow network (DNS timeouts). Re-arm the
+# safety net when they finish, so the user always gets the full window to confirm.
+# Returns the new undo time, or $null when the auto-revert already turned protection off.
+function Reset-IKSRevertTimer {
+    Invoke-IKSLocked {
+        $s = Read-IKSSettings
+        if (-not $s.Enabled) { return $null }
+        Register-IKSRevertTask
+        $next = (Get-IKSTaskInfo $script:IKS.RevertTask).NextRun
+        if (-not $next) { $next = (Get-Date).AddSeconds($script:IKS.RevertSeconds) }
+        Write-IKSLog "Auto-undo timer re-armed: $($next.ToString('s'))"
+        $next
+    }
+}
+
 function Confirm-IKSKeep {
     Unregister-IKSTask $script:IKS.RevertTask
     Write-IKSLog 'User confirmed: keep protection'
@@ -90,7 +106,9 @@ function Set-IKSIranDirect([bool]$On) {
     Invoke-IKSLocked {
         $s = Read-IKSSettings
         $s.IranDirect = $On
-        $r = if ($s.Enabled -or -not $On) { Sync-IKSIranRoutes $s } else { 'saved (applies when protection is ON)' }
+        $r = if ($s.Enabled) { Sync-IKSIranRoutes $s }
+             elseif (-not $On) { $null = Remove-IKSIranRoutes $s; 'off' }        # routes exist only while protection is ON
+             else { 'saved (applies when protection is ON)' }
         Save-IKSSettings $s
         Write-IKSLog "Iran direct = $On ($r)"
         "Iran direct is $(if ($On) { 'ON' } else { 'OFF' }): $r"
@@ -135,6 +153,21 @@ function Invoke-IKSSync([switch]$NoScan) {
     }
 }
 
+# Newer release on GitHub? Read-only, sends nothing about this PC. $null = up to date or offline.
+function Get-IKSUpdateInfo {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $r = Invoke-RestMethod -Uri $script:IKS.ReleasesApi -TimeoutSec 10 -UseBasicParsing -Headers @{ 'User-Agent' = 'IranKillSwitch' }
+        $tag = "$($r.tag_name)".Trim().TrimStart('v', 'V')
+        if ($tag -match '^\d+(\.\d+){1,3}$' -and [version]$tag -gt [version]$script:IKS.Version) {
+            $url = "$($r.html_url)"
+            if ($url -notlike 'https://github.com/saateon/iran-kill-switch/*') { $url = $script:IKS.ReleasesPage }   # only ever open our own page
+            return [pscustomobject]@{ Version = $tag; Url = $url }
+        }
+    } catch { }
+    return $null
+}
+
 function Get-IKSStatus {
     $s = Read-IKSSettings
     $filters = Get-IKSFilterCount
@@ -163,8 +196,10 @@ function Get-IKSStatus {
         Version = $script:IKS.Version; Author = $script:IKS.Author; Enabled = [bool]$s.Enabled; Filters = $filters
         Installed = (Test-Path (Join-Path $script:IKS.InstallDir 'IKS.ps1'))
         VpnApps = $apps; VpnMode = $mode; Proxy = $proxy
+        SystemProxy = $(if ($mode -eq 'proxy') { $sp = Get-IKSSystemProxy; [bool]($sp.Enabled -or $sp.Pac) } else { $null })
         Tunnel = $(if ($tun) { "$($tun[0].Name) $($tun[0].IPv4 -join ',')" } else { '' })
         IranDirect = [bool]$s.IranDirect; IranRoutes = [int]$s.RoutesCount
+        DirectSites = $(($dh = Get-IKSDirectHosts) | Out-Null; @($dh | Where-Object { -not ($_ -like 'www.*' -and $dh.Contains($_.Substring(4))) }).Count)   # www. twins not counted
         IranRanges = $list.Ranges; ListUpdated = $list.Updated; ListSource = $list.Source
         Endpoints = @($s.EndpointCache).Count; LegacyRules = $legacy
         PendingChildren = @(Get-IKSPendingChildren $s).Count     # helpers of allowed apps, not allowed yet

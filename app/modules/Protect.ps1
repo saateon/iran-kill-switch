@@ -79,12 +79,23 @@ function Remove-IKSIranRoutes($Settings) {
 
 # Idempotent: re-adds only when the network (adapter/gateway) or the Iran list changed,
 # or when Windows dropped the routes (e.g. after a reboot - they live in the active store only).
+# Route list = Iran CIDRs (when Iran direct is ON) + direct-site CIDRs, one "a.b.c.d/n" per item
+function Get-IKSRouteCidrs($Settings, $Direct) {
+    $cidrs = New-Object System.Collections.Generic.List[string]
+    if ($Settings.IranDirect) { $iran = Get-IKSIranCidrs; foreach ($c in $iran) { $cidrs.Add($c) } }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' (, [string[]]$cidrs.ToArray())
+    foreach ($c in $Direct) { if ($seen.Add($c)) { $cidrs.Add($c) } }
+    return , $cidrs
+}
+
 function Sync-IKSIranRoutes($Settings) {
-    if (-not $Settings.IranDirect) { $null = Remove-IKSIranRoutes $Settings; return 'off' }
+    # Iran ranges (when Iran direct is ON) + the user's direct sites (always)
+    $direct = Get-IKSDirectCidrs $Settings
+    if (-not $Settings.IranDirect -and $direct.Count -eq 0) { $null = Remove-IKSIranRoutes $Settings; return 'off' }
     $phys = Get-IKSPhysicalInterface
     if (-not $phys) { return 'no network' }
-    $cidrs = Get-IKSIranCidrs
-    $hash = "$($phys.ifIndex)|$($phys.Gateway)|$($cidrs.Count)|$($cidrs[0])|$($cidrs[$cidrs.Count - 1])"
+    $cidrs = Get-IKSRouteCidrs $Settings $direct
+    $hash = "$($phys.ifIndex)|$($phys.Gateway)|$($cidrs.Count)|$($cidrs[0])|$($cidrs[$cidrs.Count - 1])|$($direct -join ',')"
     $probe = $cidrs[[int]($cidrs.Count / 2)]
     $present = [bool](Get-NetRoute -DestinationPrefix $probe -InterfaceIndex $phys.ifIndex -ErrorAction SilentlyContinue)
     if ($Settings.RoutesHash -eq $hash -and $present) { return "unchanged ($($Settings.RoutesCount) routes)" }

@@ -8,6 +8,8 @@ $script:IKS = @{
     GuardTask       = 'IKS-Guard'
     RevertTask      = 'IKS-AutoRevert'
     RevertSeconds   = 120
+    ReleasesApi     = 'https://api.github.com/repos/saateon/iran-kill-switch/releases/latest'   # update check (read-only)
+    ReleasesPage    = 'https://github.com/saateon/iran-kill-switch/releases/latest'
     LegacyGroup     = 'Iran Kill Switch'        # v1 Windows Firewall rule group (removed on upgrade)
     ListMaxAgeDays  = 7
     EndpointCacheDays = 7
@@ -26,7 +28,7 @@ $script:IKS = @{
     TapRegex        = '(?i)tap-windows|tap0901|openvpn|amnezia.*tap|tap adapter'
     # Known VPN programs. Detection: running processes, services, and the vendor folders below.
     VpnCatalog      = @(
-        'Hiddify.exe', 'HiddifyCli.exe', 'v2rayN.exe', 'xray.exe', 'v2ray.exe', 'sing-box.exe',
+        'Hiddify.exe', 'HiddifyCli.exe', 'HiddifyAdmin.exe', 'HiddifyService.exe', 'HiddifyCoreEngine.exe', 'v2rayN.exe', 'xray.exe', 'v2ray.exe', 'sing-box.exe',
         'nekoray.exe', 'nekobox.exe', 'nekobox_core.exe', 'clash-verge.exe', 'verge-mihomo.exe',
         'verge-mihomo-alpha.exe', 'mihomo.exe', 'clash.exe', 'clash-meta.exe',
         'wireguard.exe', 'amneziawg.exe', 'AmneziaVPN.exe', 'AmneziaVPN-service.exe', 'openvpn.exe',
@@ -53,6 +55,7 @@ function Set-IKSRoot([string]$Root) {
     $script:IKS.SettingsFile  = Join-Path $Root 'state\settings.json'
     $script:IKS.EndpointsFile = Join-Path $Root 'state\allowed-servers.txt'
     $script:IKS.RoutesFile    = Join-Path $Root 'state\routes.txt'
+    $script:IKS.DirectFile    = Join-Path $Root 'state\direct-sites.txt'
     $script:IKS.IranFile      = Join-Path $Root 'data\ir-ipv4.txt'
     $script:IKS.NativeSrc     = Join-Path $Root 'native\IksNative.cs'
     $vf = Join-Path $Root 'VERSION'
@@ -85,7 +88,7 @@ function Test-IKSAdmin {
 function Read-IKSSettings {
     $s = @{
         Enabled = $false; IranDirect = $true
-        VpnApps = @(); IgnoredApps = @(); EndpointCache = @(); LearnedTunnels = @()
+        VpnApps = @(); IgnoredApps = @(); EndpointCache = @(); LearnedTunnels = @(); DirectCache = @()
         AppliedHash = ''; AppliedAt = ''; AppliedFilters = 0
         RoutesIfIndex = 0; RoutesNextHop = ''; RoutesHash = ''; RoutesCount = 0
         ProfilesBackup = $null                       # v1 only: restored by the migration
@@ -97,7 +100,7 @@ function Read-IKSSettings {
             foreach ($p in $j.PSObject.Properties) { $s[$p.Name] = $p.Value }
         } catch { Write-IKSLog "settings.json unreadable, defaults used: $_" 'WARN' }
     }
-    foreach ($k in 'VpnApps', 'IgnoredApps', 'EndpointCache', 'LearnedTunnels') { $s[$k] = @($s[$k] | Where-Object { $_ }) }
+    foreach ($k in 'VpnApps', 'IgnoredApps', 'EndpointCache', 'LearnedTunnels', 'DirectCache') { $s[$k] = @($s[$k] | Where-Object { $_ }) }
     return $s
 }
 
@@ -109,8 +112,24 @@ function Save-IKSSettings($Settings) {
 }
 
 # ---- one operation at a time (GUI, guard task, CLI) ----------------------
+# The guard (SYSTEM) and the app (user, elevated) share one lock. Whoever creates it first must
+# let the other one in, or the second gets "Access to the path 'Global\IranKillSwitch' is denied".
+function Get-IKSGlobalMutex {
+    $name = 'Global\IranKillSwitch'
+    $sec = New-Object System.Security.AccessControl.MutexSecurity
+    foreach ($sid in 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-11') {      # SYSTEM, Administrators, Authenticated Users
+        $sec.AddAccessRule((New-Object System.Security.AccessControl.MutexAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier $sid), [System.Security.AccessControl.MutexRights]::FullControl, 'Allow')))
+    }
+    $created = $false
+    try { return [System.Threading.Mutex]::new($false, $name, [ref]$created, $sec) }
+    catch {   # an older version created it with the default (owner-only) access: ask only for what we need
+        return [System.Threading.Mutex]::OpenExisting($name, [System.Security.AccessControl.MutexRights]'Synchronize, Modify')
+    }
+}
+
 function Invoke-IKSLocked([scriptblock]$Body) {
-    $m = New-Object System.Threading.Mutex($false, 'Global\IranKillSwitch')
+    $m = Get-IKSGlobalMutex
     $got = $false
     try {
         try { $got = $m.WaitOne(180000) } catch [System.Threading.AbandonedMutexException] { $got = $true }

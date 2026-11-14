@@ -12,7 +12,7 @@ $root = Join-Path (Split-Path -Parent $PSScriptRoot) 'app'
 # Isolate state: tests never touch the real state folder
 $tmpState = Join-Path ([IO.Path]::GetTempPath()) "iks-test-$PID"
 $script:IKS.StateDir = $tmpState; $script:IKS.SettingsFile = "$tmpState\settings.json"; $script:IKS.LogFile = "$tmpState\iks.log"
-$script:IKS.EndpointsFile = "$tmpState\allowed.txt"; $script:IKS.RoutesFile = "$tmpState\routes.txt"
+$script:IKS.EndpointsFile = "$tmpState\allowed.txt"; $script:IKS.RoutesFile = "$tmpState\routes.txt"; $script:IKS.DirectFile = "$tmpState\direct.txt"
 
 $script:pass = 0; $script:fail = 0; $script:skip = 0
 function Say([string]$m, [string]$c = 'Gray') { if ($Out) { Add-Content -Path $Out -Value $m -Encoding UTF8 } else { Write-Host $m -ForegroundColor $c } }
@@ -84,6 +84,36 @@ foreach ($l in 'vless://id@1.2.3.4:443?x#n', 'trojan://p@Trojan.Example.com:8443
 Check 'vless / trojan / socks5 / tuic / vmess / ss' { $map.ContainsKey('1.2.3.4') -and $map.ContainsKey('trojan.example.com') -and $map.ContainsKey('9.8.7.6') -and $map.ContainsKey('tuic.example.io') -and $map.ContainsKey('vm.example.org') -and $map.ContainsKey('sip002.example.net') }
 Check 'CIDR and bare domain kept; IPv6 and comments skipped' { $map.ContainsKey('203.0.113.0/24') -and $map.ContainsKey('my.server.io') -and -not ($map.Keys | Where-Object { $_ -match ':|comment' }) }
 
+Say "`n[direct sites]"
+New-IKSDirectFile
+Add-Content $script:IKS.DirectFile 'https://Bank.Example.com:8443/login?a=1', '*.cdn.example.net', '198.51.100.7', '203.0.113.9/24', 'not a host!', '127.0.0.1'
+$dh = Get-IKSDirectHosts
+Check 'direct sites: URL/wildcard -> host, www twin added, IP + CIDR kept, junk and loopback skipped' {
+    ($dh -join ',') -eq 'bank.example.com,www.bank.example.com,cdn.example.net,www.cdn.example.net,198.51.100.7,203.0.113.9/24'
+}
+$ds = @{ DirectCache = @([pscustomobject]@{ Host = '198.51.100.7'; Ip = '198.51.100.7'; LastSeen = (Get-Date).ToString('s') },
+                         [pscustomobject]@{ Host = '203.0.113.9/24'; Ip = '203.0.113.9/24'; LastSeen = (Get-Date).ToString('s') }); IranDirect = $true }
+Check 'direct sites -> clean CIDRs for routes (host bits cleared)' { ((Get-IKSDirectCidrs $ds) -join ',') -eq '198.51.100.7/32,203.0.113.0/24' }
+Check 'direct sites are allowed outside the tunnel; neighbours are not' {
+    $p = Get-IKSPlan $ds
+    (Test-IKSInRanges '198.51.100.7' $p.Allowed) -and (Test-IKSInRanges '203.0.113.200' $p.Allowed) -and -not (Test-IKSInRanges '198.51.100.8' $p.Allowed)
+}
+Check 'route list = Iran CIDRs + direct sites, each item one CIDR' {
+    $rc = Get-IKSRouteCidrs $ds (Get-IKSDirectCidrs $ds)
+    $rc.Count -eq ((Get-IKSIranCidrs).Count + 2) -and -not ($rc | Where-Object { $_ -notmatch '^\d+\.\d+\.\d+\.\d+/\d+$' }) -and $rc[$rc.Count - 1] -eq '203.0.113.0/24'
+}
+Check 'proxy bypass entries: names/IPs kept, /24 -> wildcard, odd CIDR skipped' {
+    ((ConvertTo-IKSBypassEntries @('a.com', 'www.a.com', '198.51.100.7', '203.0.113.9/24', '10.1.0.0/20', '1.2.3.4/32')) -join ';') -eq 'a.com;www.a.com;198.51.100.7;203.0.113.*;1.2.3.4'
+}
+Check 'proxy bypass merge: re-adds removed entries, keeps the VPN list, drops stale ones, removes all when OFF' {
+    $vpn = 'localhost;127.*;192.168.*;<local>'
+    ((Merge-IKSProxyOverride $vpn @('a.com') @('a.com', 'b.com')) -eq "a.com;b.com;$vpn") -and
+    ((Merge-IKSProxyOverride "a.com;old.com;$vpn" @('a.com', 'old.com') @('a.com')) -eq "a.com;$vpn") -and
+    ((Merge-IKSProxyOverride "a.com;$vpn" @('a.com') @()) -eq $vpn) -and
+    ((Merge-IKSProxyOverride '' @() @('a.com')) -eq 'a.com')
+}
+Remove-Item $script:IKS.DirectFile -Force
+
 Say "`n[Iran list]"
 $info = Get-IKSListInfo
 Check "bundled list present ($($info.Ranges) ranges, $($info.Updated))" { $info.Ranges -ge 300 }
@@ -97,9 +127,12 @@ Check "route CIDRs cover the Iran list exactly ($((Get-IKSIranCidrs).Count) rout
 
 Say "`n[VPN app detection]"
 $found = Find-IKSVpnApps
-Check "detection returns only existing catalog programs ($($found.Count) found)" {
-    -not ($found.Keys | Where-Object { -not (Test-Path -LiteralPath $_) -or $script:IKS.VpnCatalog -notcontains (Split-Path $_ -Leaf) })
+Check "detection returns only existing catalog or vendor-named programs ($($found.Count) found)" {
+    -not ($found.Keys | Where-Object { $leaf = Split-Path $_ -Leaf
+        -not (Test-Path -LiteralPath $_) -or $leaf -match '(?i)^unins' -or
+        ($script:IKS.VpnCatalog -notcontains $leaf -and $leaf -notmatch $script:IKS.VendorRegex) })
 }
+Check 'Hiddify TUN helper (HiddifyAdmin.exe) is a known VPN program' { $script:IKS.VpnCatalog -contains 'HiddifyAdmin.exe' }
 # Stub the scanner to test merge rules without depending on this PC
 function Find-IKSVpnApps { return @{ $curl.ToLower() = 'curl'; 'c:\nowhere\ghost.exe' = 'ghost' } }
 $st = @{ VpnApps = @([pscustomobject]@{ Path = 'c:\mine\my.exe'; Name = 'my'; Source = 'user' }); IgnoredApps = @() }

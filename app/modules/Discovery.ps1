@@ -22,7 +22,13 @@ function Find-IKSVpnApps {
     }
     foreach ($root in ($roots | Where-Object { $_ } | Select-Object -Unique)) {
         foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $script:IKS.VendorRegex })) {
-            foreach ($f in @(Get-ChildItem -LiteralPath $dir.FullName -Recurse -Depth 3 -Filter *.exe -File -ErrorAction SilentlyContinue)) { & $add $f.FullName }
+            foreach ($f in @(Get-ChildItem -LiteralPath $dir.FullName -Recurse -Depth 3 -Filter *.exe -File -ErrorAction SilentlyContinue)) {
+                # Vendors rename or add helpers (Hiddify runs TUN in HiddifyAdmin.exe): inside a vendor
+                # folder, a program named after the vendor counts too (never the uninstaller)
+                if ($f.Name -match $script:IKS.VendorRegex -and $f.Name -notmatch '(?i)^unins') {
+                    $found[$f.FullName.ToLower()] = $f.BaseName
+                } else { & $add $f.FullName }
+            }
         }
     }
     return $found
@@ -54,6 +60,24 @@ function Find-IKSChildApps([string[]]$AllowedPaths) {
     return $found
 }
 
+# VPN clients start helpers through UAC or a service (HiddifyAdmin.exe, *-service.exe), often
+# under a new name. When an allowed program lives in a folder named after a VPN vendor (also a
+# portable copy, e.g. D:\Apps\v2rayN), the other programs in that folder belong to it too.
+# Never the uninstaller, never anything under %SystemRoot%, never a plain folder like Desktop.
+function Find-IKSVendorSiblings([string[]]$AllowedPaths) {
+    $sys = $env:SystemRoot.ToLower()
+    $found = @{}
+    $dirs = @($AllowedPaths | Where-Object { $_ } | ForEach-Object { Split-Path $_ -Parent } | Sort-Object -Unique)
+    foreach ($d in $dirs) {
+        if ($d.ToLower().StartsWith($sys) -or (Split-Path $d -Leaf) -notmatch $script:IKS.VendorRegex) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $d -Recurse -Depth 2 -Filter *.exe -File -ErrorAction SilentlyContinue)) {
+            if ($f.Name -match '(?i)^unins|setup|update|maintenance|redist|^devcon') { continue }   # installer tools
+            $found[$f.FullName.ToLower()] = $f.BaseName
+        }
+    }
+    return $found
+}
+
 # Keeps the user's own entries, refreshes the automatic ones. Entry: { Path, Name, Source = auto|user|child }
 # Child programs are followed on every call (cheap), even with -NoScan.
 function Update-IKSVpnApps($Settings, [switch]$NoScan) {
@@ -69,6 +93,12 @@ function Update-IKSVpnApps($Settings, [switch]$NoScan) {
         }
     }
     $ignored = @($Settings.IgnoredApps | ForEach-Object { "$_".ToLower() })
+    if (-not $NoScan) {
+        $sib = Find-IKSVendorSiblings @($list.Keys)
+        foreach ($k in $sib.Keys) {
+            if (-not $list.ContainsKey($k) -and $ignored -notcontains $k) { $list[$k] = [pscustomobject]@{ Path = $k; Name = $sib[$k]; Source = 'auto' } }
+        }
+    }
     $kids = Find-IKSChildApps @($list.Keys)
     foreach ($k in $kids.Keys) {
         if (-not $list.ContainsKey($k) -and $ignored -notcontains $k) { $list[$k] = [pscustomobject]@{ Path = $k; Name = $kids[$k]; Source = 'child' } }
@@ -143,6 +173,64 @@ function Update-IKSEndpoints($Settings) {
     $Settings.EndpointCache = @($cache.Values | Sort-Object Host, Ip)
 }
 
+# ---- direct sites (user list: these go out WITHOUT the VPN, like Iranian sites) ----
+function New-IKSDirectFile {
+    Initialize-IKSState
+    if (Test-Path $script:IKS.DirectFile) { return }
+    @('# Iran Kill Switch - direct sites (optional).',
+      '# Sites here go out through your normal internet, NOT through the VPN - like Iranian sites.',
+      '# Use it for a foreign site that works without VPN and is faster that way (a bank, a game server...).',
+      '# One per line: a domain (example.com - www.example.com is added too), an IP, a CIDR, or a URL.',
+      '# Works best with VPNs in TUN mode. Save and close Notepad: changes apply in a few seconds.', '') |
+        Set-Content $script:IKS.DirectFile -Encoding UTF8
+}
+
+# Lines of the direct-sites file -> clean hosts (domain / IPv4 / CIDR)
+function Get-IKSDirectHosts {
+    $out = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path $script:IKS.DirectFile)) { return , $out }
+    foreach ($line in Get-Content $script:IKS.DirectFile) {
+        $h = "$line".Trim()
+        if (-not $h -or $h[0] -eq '#') { continue }
+        if ($h -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$') {                                             # CIDR stays as it is
+            $h = $h -replace '(?i)^[a-z][a-z0-9+.-]*://', '' -replace '[/?#].*$', '' -replace '^\*\.', '' -replace ':\d+$', ''   # URL / wildcard -> host
+        }
+        $h = $h.ToLower()
+        $isName = $h -match '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
+        $ok = $isName -or (Test-IKSIPv4 $h) -or ($h -match '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$')
+        if (-not $ok -or $h -match '^(127\.|0\.)') { continue }
+        if (-not $out.Contains($h)) { $out.Add($h) }
+        if ($isName -and $h -notmatch '^www\.' -and -not $out.Contains("www.$h")) { $out.Add("www.$h") }
+    }
+    return , $out
+}
+
+# Resolves the list (all names at once, max 4 s) and keeps recent answers: CDN addresses rotate
+function Update-IKSDirectSites($Settings) {
+    $hosts = Get-IKSDirectHosts
+    $now = (Get-Date).ToString('s')
+    $cache = @{}
+    foreach ($c in $Settings.DirectCache) {
+        if ($hosts.Contains($c.Host) -and (Get-IKSAgeDays $c.LastSeen) -le $script:IKS.EndpointCacheDays) { $cache["$($c.Host)|$($c.Ip)"] = $c }
+    }
+    $names = @($hosts | Where-Object { $_ -match '[a-z]$' })
+    $dns = if ($names) { Resolve-IKSIPv4Many $names 4000 } else { @{} }
+    foreach ($h in $hosts) {
+        $ips = if ($h -match '[a-z]$') { @($dns[$h]) } else { @($h) }
+        foreach ($ip in $ips) { if ($ip) { $cache["$h|$ip"] = [pscustomobject]@{ Host = $h; Ip = $ip; LastSeen = $now } } }
+    }
+    $Settings.DirectCache = @($cache.Values | Sort-Object Host, Ip)
+}
+
+# Direct sites as clean, merged CIDRs (for routes)
+function Get-IKSDirectCidrs($Settings) {
+    $out = New-Object System.Collections.Generic.List[string]
+    $r = New-IKSRangeList
+    Add-IKSRanges $r @($Settings.DirectCache | ForEach-Object { $_.Ip } | Where-Object { $_ })
+    foreach ($m in (Merge-IKSRanges $r)) { foreach ($c in (ConvertTo-IKSCidrs $m)) { $out.Add("$(ConvertFrom-IKSInt $c[0])/$($c[1])") } }
+    return , $out
+}
+
 # ---- interfaces ------------------------------------------------------------
 function Get-IKSTunnelAdapters {
     $out = @()
@@ -181,6 +269,73 @@ function Update-IKSLearnedTunnels($Settings) {
         foreach ($ip in $a.IPv4) { if (-not $phys -or $ip -ne $phys.IPv4) { $map[$ip] = $now } }   # never exempt the real NIC
     }
     $Settings.LearnedTunnels = @($map.Keys | Sort-Object | ForEach-Object { [pscustomobject]@{ Ip = $_; LastSeen = $map[$_] } })
+}
+
+# Windows (WinINet) proxy of the current user: what browsers use
+function Get-IKSSystemProxy {
+    $p = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Enabled = [bool]($p -and $p.ProxyEnable -eq 1 -and $p.ProxyServer); Server = "$($p.ProxyServer)"; Pac = "$($p.AutoConfigURL)" }
+}
+
+# ---- proxy bypass: direct sites in the Windows "no proxy" list ----------------------------
+# Proxy-mode VPNs (Hiddify "System proxy") get every browser request, so routes do not help there.
+# The GUI (signed-in user) keeps our entries in ProxyOverride; the VPN client may rewrite that value.
+function ConvertTo-IKSBypassEntries($Hosts) {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($h in $Hosts) {
+        $e = "$h"
+        if ($e -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)/(\d+)$') {          # WinINet has no CIDR syntax: /32 /24 /16 /8 only
+            $p = [int]$Matches[5]
+            if ($p -eq 32) { $e = '{0}.{1}.{2}.{3}' -f $Matches[1], $Matches[2], $Matches[3], $Matches[4] }
+            elseif ($p -eq 24) { $e = '{0}.{1}.{2}.*' -f $Matches[1], $Matches[2], $Matches[3] }
+            elseif ($p -eq 16) { $e = '{0}.{1}.*' -f $Matches[1], $Matches[2] }
+            elseif ($p -eq 8) { $e = '{0}.*' -f $Matches[1] }
+            else { continue }
+        }
+        if ($e -and -not $out.Contains($e)) { $out.Add($e) }
+    }
+    return , $out
+}
+
+# Pure: our entries first, then the rest of the list (VPN client's own, <local>) in its order
+function Merge-IKSProxyOverride([string]$Current, $Old, $Want) {
+    $drop = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($x in (@($Old) + @($Want))) { if ($x) { $null = $drop.Add("$x") } }
+    $rest = @("$Current".Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $drop.Contains($_) })
+    return ((@(@($Want) | Where-Object { $_ }) + $rest) -join ';')
+}
+
+# Cheap (2 registry reads + 1 file time, ~8 ms); writes only when something is missing or stale
+$script:IKSBypassCache = @{ Stamp = $null; Entries = @() }
+function Sync-IKSProxyBypass([bool]$Enabled) {
+    $isKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $ourKey = 'HKCU:\Software\IranKillSwitch'
+    $p = Get-ItemProperty $isKey -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $old = @("$((Get-ItemProperty $ourKey -ErrorAction SilentlyContinue).ProxyBypass)".Split(';') | Where-Object { $_ })
+    $want = @()
+    if ($Enabled -and $p.ProxyEnable -eq 1 -and $p.ProxyServer) {
+        $f = Get-Item $script:IKS.DirectFile -ErrorAction SilentlyContinue
+        $stamp = $(if ($f) { "$($f.LastWriteTimeUtc.Ticks)" } else { '-' })
+        if ($script:IKSBypassCache.Stamp -ne $stamp) {
+            $script:IKSBypassCache = @{ Stamp = $stamp; Entries = (ConvertTo-IKSBypassEntries (Get-IKSDirectHosts)).ToArray() }
+        }
+        $want = @($script:IKSBypassCache.Entries)
+    }
+    if (-not $want.Count -and -not $old.Count) { return $null }
+    $cur = @("$($p.ProxyOverride)".Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ';'
+    $new = Merge-IKSProxyOverride $cur $old $want
+    $same = ($old -join ';') -eq ($want -join ';')
+    if ($new -eq $cur -and $same) { return $null }
+    if ($new -ne $cur) { Set-ItemProperty $isKey -Name ProxyOverride -Value $new }
+    if (-not $same) {
+        if (-not (Test-Path $ourKey)) { New-Item $ourKey -Force | Out-Null }
+        Set-ItemProperty $ourKey -Name ProxyBypass -Value ($want -join ';')
+    }
+    try { Import-IKSNative; $null = [IKS.Native.Inet]::Refresh() } catch { }
+    if (-not $want.Count) { return "removed $($old.Count) entries" }
+    if ($same) { return "re-added $($want.Count) entries (the VPN app had removed them)" }
+    return "set $($want.Count) entries"
 }
 
 # First local proxy port that is listening (proxy-mode VPN clients)

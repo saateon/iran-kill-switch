@@ -40,6 +40,14 @@ VPN's routes, so Iranian traffic leaves directly without any VPN configuration.
 Routes live in the active store only and are re-synced by the guard after reboots and
 network changes.
 
+## Direct sites
+
+Your list in `state\direct-sites.txt`. Names are resolved in parallel (4 s limit) and the
+answers are kept for 7 days, because CDN addresses rotate. The addresses are allowed at
+weight 12 and get routes like the Iran ranges. For System Proxy VPNs the app also writes the
+names into the Windows "no proxy" list (HKCU `ProxyOverride`) and puts them back if the VPN
+app rewrites that value (on ON/OFF, Refresh, list save and every hour).
+
 ## Iran IP list
 
 RIPE NCC delegated statistics (country `IR`) merged with ipdeny's aggregated zone,

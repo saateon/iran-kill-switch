@@ -12,6 +12,7 @@ function Get-IKSPlan($Settings) {
     $allowed.AddRange((Get-IKSSpecialRanges))
     $endpoints = @($Settings.EndpointCache | ForEach-Object { $_.Ip } | Sort-Object -Unique)
     Add-IKSRanges $allowed $endpoints
+    Add-IKSRanges $allowed @($Settings.DirectCache | ForEach-Object { $_.Ip } | Where-Object { $_ } | Sort-Object -Unique)   # direct sites
     $allowedMerged = Merge-IKSRanges $allowed
 
     $tun = New-IKSRangeList
@@ -25,6 +26,7 @@ function Get-IKSPlan($Settings) {
     $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').Substring(0, 16)
     return [pscustomobject]@{
         Apps = $apps; Allowed = $allowedMerged; Tunnels = $tunMerged; Endpoints = $endpoints
+        DirectHosts = @($Settings.DirectCache | ForEach-Object { $_.Host } | Sort-Object -Unique)
         IranRanges = $iran.Count; Iran = $iran; Hash = $hash
     }
 }
@@ -62,6 +64,7 @@ function Format-IKSPlan($Plan, $Settings) {
            "   Iran           : $($Plan.IranRanges) ranges",
            '   Local network  : LAN, loopback, DHCP, multicast',
            "   Allowed servers: $(if ($Plan.Endpoints) { $Plan.Endpoints -join ', ' } else { '-' })",
+           "   Direct sites   : $(if ($Plan.DirectHosts) { $Plan.DirectHosts -join ', ' } else { '-' })",
            '   IPv6           : blocked except loopback, LAN and tunnels', '',
            "Iran direct (TUN): $(if ($Settings.IranDirect) { 'ON - Iranian ranges get a direct route via the real network adapter' } else { 'off' })",
            'Windows Firewall : not touched')

@@ -38,12 +38,15 @@ Iranian sites fast and direct.
   before any VPN starts. Block rules win over every Windows Firewall allow rule.
 - **Iran direct**: about 1,600 Iranian IPv4 ranges (RIPE NCC + ipdeny, auto-updated) stay
   outside the VPN. For TUN-mode VPNs the tool adds direct routes, so no VPN config is needed.
+- **Direct sites**: your own list of foreign sites (domain, IP, CIDR or URL) that skip the VPN.
+  Works in TUN mode (routes) and in System Proxy mode (Windows "no proxy" list, re-applied if the VPN app removes it).
 - **No leaks**: DNS, WebRTC (STUN) and IPv6 are covered. Built-in leak test.
 - **Safe by design**: every change is applied in one transaction; turning on auto-undoes
   itself in 2 minutes unless you confirm; Emergency OFF and full uninstall restore everything.
   Windows Firewall settings are never changed.
 - **Self-managing**: a background guard repairs filters, refreshes the Iran list and finds
   new VPN programs.
+- **Update check**: the footer shows when a newer release is on GitHub.
 - **Zero dependencies**: only what ships with Windows 10/11. One 80 KB installer.
 
 ## Screenshots

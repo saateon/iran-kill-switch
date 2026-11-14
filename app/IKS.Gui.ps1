@@ -219,10 +219,14 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
     <!-- main content: fixed height, no scrolling (results open in a card) -->
     <StackPanel Grid.Row="1" Margin="22,0,22,16">
       <!-- the ring IS the on/off switch (keyboard: Tab, then Enter/Space) -->
-      <Button x:Name="RingBtn" Style="{StaticResource RingButton}" Width="164" Height="164" Margin="0,10,0,0"
+      <!-- 180 px box (layout height unchanged by the margins): room for the glow and its blur, so it is never clipped -->
+      <Button x:Name="RingBtn" Style="{StaticResource RingButton}" Width="180" Height="180" Margin="0,2,0,-8"
               ToolTip="Click to turn protection on or off. Turning on asks you to confirm within 2 minutes, otherwise it is undone automatically.">
+       <Grid Width="180" Height="180">
+        <Ellipse x:Name="RingGlow" Width="162" Height="162" Stroke="$($T.Off)" StrokeThickness="12" Opacity="0.18">
+          <Ellipse.Effect><BlurEffect Radius="7"/></Ellipse.Effect>
+        </Ellipse>
         <Grid x:Name="Ring" Width="150" Height="150">
-          <Ellipse x:Name="RingGlow" Stroke="$($T.Off)" StrokeThickness="12" Opacity="0.18" Margin="-6"/>
           <Ellipse Stroke="$($T.Line)" StrokeThickness="12"/>
           <Ellipse x:Name="RingArc" Stroke="$($T.Off)" StrokeThickness="12" RenderTransformOrigin="0.5,0.5">
             <Ellipse.RenderTransform><RotateTransform Angle="-90"/></Ellipse.RenderTransform>
@@ -234,6 +238,7 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
             <TextBlock x:Name="RingHint" Text="" FontSize="9.5" Foreground="$($T.Muted)" HorizontalAlignment="Center"/>
           </StackPanel>
         </Grid>
+       </Grid>
       </Button>
       <TextBlock x:Name="Headline" Text="Checking..." FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0"/>
       <TextBlock x:Name="Sub" Text="" FontSize="12.5" Foreground="$($T.Muted)" TextAlignment="Center" TextWrapping="Wrap" Margin="10,4,10,0"/>
@@ -270,7 +275,7 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
       <UniformGrid Columns="3" Margin="0,10,0,0">
         <Button x:Name="BtnTest"    Style="{StaticResource Btn}" ToolTip="Checks for leaks: foreign traffic without VPN, DNS, WebRTC, IPv6 and Iranian sites." Margin="0,0,5,0" Content="Leak test"/>
         <Button x:Name="BtnPreview" Style="{StaticResource Btn}" ToolTip="Shows what turning on will do. Changes nothing." Margin="5,0,5,0" Content="Preview"/>
-        <Button x:Name="BtnRefresh" Style="{StaticResource Btn}" ToolTip="Finds newly installed VPN programs and updates the Iran IP list." Margin="5,0,0,0" Content="Refresh"/>
+        <Button x:Name="BtnRefresh" Style="{StaticResource Btn}" ToolTip="Finds newly installed VPN programs, updates the Iran IP list and re-applies the direct sites." Margin="5,0,0,0" Content="Refresh"/>
       </UniformGrid>
 
 
@@ -278,6 +283,7 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0">
         <Button x:Name="BtnLog" Style="{StaticResource Link}" ToolTip="Opens the activity log." Content="Log"/>
         <Button x:Name="BtnServers" Style="{StaticResource Link}" ToolTip="Optional: servers to allow without allowing a whole program (Windows built-in VPN, a SOCKS5 proxy set in a browser)." Content="Allowed servers"/>
+        <Button x:Name="BtnDirect" Style="{StaticResource Link}" ToolTip="Sites that go out through your normal internet, not the VPN (like Iranian sites). Best with TUN-mode VPNs." Content="Direct sites"/>
         <Button x:Name="BtnUninstall" Style="{StaticResource Link}" ToolTip="Removes the tool and everything it changed." Content="Uninstall"/>
       </StackPanel>
       <TextBlock x:Name="Footer" HorizontalAlignment="Center" FontSize="11" Foreground="$($T.Off)" Margin="0,10,0,0"/>
@@ -457,10 +463,26 @@ function Set-RingEffects([bool]$On, [string]$Color) {
 $ui.RingBtn.add_MouseEnter({ if ($script:Status) { $ui.RingHint.Text = Get-RingHoverHint ([bool]$script:Status.Enabled) } })
 $ui.RingBtn.add_MouseLeave({ if ($script:RingHintIdle) { $ui.RingHint.Text = $script:RingHintIdle } })
 
+# Footer: author + version, or a download link when GitHub has a newer release
+function Set-Footer {
+    if ($script:Update) {
+        $ui.Footer.Text = "Update available: v$($script:Update.Version)  $([char]0x00B7)  click to download"
+        $ui.Footer.Foreground = Brush $T.Green; $ui.Footer.Cursor = [Windows.Input.Cursors]::Hand
+        $ui.Footer.ToolTip = "You have v$($script:IKS.Version). Opens the download page."
+    } else {
+        $ui.Footer.Text = "Made by $($script:IKS.Author)  $([char]0x00B7)  v$($script:IKS.Version)"
+    }
+}
+function Start-UpdateCheck {
+    if ($SelfTest) { return }
+    Start-Job2 'Get-IKSUpdateInfo' { param($o, $e) if (-not $e -and $o -and $o[0]) { $script:Update = $o[0]; Set-Footer } }
+}
+$ui.Footer.add_MouseLeftButtonUp({ if ($script:Update) { try { Start-Process $script:Update.Url } catch { } } })
+
 function Render-Status($s) {
     $script:Status = $s
     $ui.Ver.Text = "v$($s.Version)"
-    $ui.Footer.Text = "Made by $($s.Author)  $([char]0x00B7)  v$($s.Version)"
+    Set-Footer
     if ($s.Enabled -and $s.RevertPending) { $c = $T.Amber; $ring = 'ON'; $hint = 'NOT CONFIRMED'; $h = 'Waiting for your confirmation'; $sub = 'Protection will be undone automatically unless you confirm it works.' }
     elseif ($s.Enabled -and $s.Healthy) {
         $c = $T.Green; $ring = 'ON'; $hint = 'PROTECTED'; $h = 'You are protected'
@@ -473,6 +495,7 @@ function Render-Status($s) {
     $script:RingHintIdle = $hint
     $ui.RingHint.Text = $(if ($ui.RingBtn.IsMouseOver) { Get-RingHoverHint $s.Enabled } else { $hint })
     Set-RingEffects ([bool]$s.Enabled) $c
+    if ($script:ProtOn -ne [bool]$s.Enabled) { $script:ProtOn = [bool]$s.Enabled; Sync-Bypass }   # ON/OFF changed: apply now
     Set-AppIcon $c "Iran Kill Switch - $ring ($($hint.ToLower()))"
     # A VPN app started a helper program (e.g. MobaXterm -> MobaRTE.exe): allow it right away
     if (-not $SelfTest -and $s.Enabled -and $s.PendingChildren -gt 0 -and -not $script:AutoSyncing -and -not (Test-Busy)) {
@@ -483,14 +506,18 @@ function Render-Status($s) {
     $clients = (@($s.VpnApps | Where-Object Running | ForEach-Object { $_.Name } | Where-Object { $_ -notmatch '(?i)service|svc|cli$' }) | Select-Object -Unique -First 2) -join ', '
     switch ($s.VpnMode) {
         'tun'   { $ui.ValVpn.Text = "$clients - TUN $($s.Tunnel)".Trim(' -'); Set-Dot $ui.DotVpn $T.Green }
-        'proxy' { $ui.ValVpn.Text = "$clients - proxy $($s.Proxy -replace 'http://', '')"; Set-Dot $ui.DotVpn $T.Green }
+        'proxy' {
+            if ($s.SystemProxy -eq $false) { $ui.ValVpn.Text = "$clients - proxy, Windows proxy OFF"; Set-Dot $ui.DotVpn $T.Amber }   # browsers go direct -> blocked
+            else { $ui.ValVpn.Text = "$clients - proxy $($s.Proxy -replace 'http://', '')"; Set-Dot $ui.DotVpn $T.Green }
+        }
         default { $ui.ValVpn.Text = $(if ($clients) { "$clients - not connected" } else { 'Not connected' }); Set-Dot $ui.DotVpn $T.Off }
     }
     $apps = @($s.VpnApps | Where-Object Exists)
     $ui.ValApps.Text = $(if ($apps) { "$($apps.Count) allowed" } else { 'none found' })
     Set-Dot $ui.DotApps $(if ($apps) { $T.Green } else { $T.Amber })
     $script:SyncingIran = $true; $ui.ChkIran.IsChecked = [bool]$s.IranDirect; $script:SyncingIran = $false
-    $ui.ValIran.Text = $(if (-not $s.IranDirect) { 'off' } elseif ($s.Enabled -and $s.IranRoutes) { "$($s.IranRoutes) routes" } elseif ($s.Enabled) { 'no network' } else { 'on with protection' })
+    $ui.ValIran.Text = $(if (-not $s.IranDirect) { 'off' } elseif ($s.Enabled -and $s.IranRoutes) { "$($s.IranRoutes) routes" } elseif ($s.Enabled) { 'no network' } else { 'on with protection' }) +
+                       $(if ($s.DirectSites) { " + $($s.DirectSites) direct site$(if ($s.DirectSites -gt 1) { 's' })" } else { '' })
     Set-Dot $ui.DotIran $(if ($s.IranDirect -and $s.Enabled -and $s.IranRoutes) { $T.Green } else { $T.Off })
     $ui.ValList.Text = '{0:N0} ranges - {1}' -f $s.IranRanges, $(if ($s.ListUpdated) { $s.ListUpdated.Substring(0, [Math]::Min(10, $s.ListUpdated.Length)) } else { 'unknown' })
     Set-Dot $ui.DotList $(if ($s.IranRanges -gt 300) { $T.Green } else { $T.Red })
@@ -551,16 +578,26 @@ function Start-Enable {
             param($o2, $e2)
             Refresh-Status
             $sum = if ($e2) { $ui.OvList.Children.Clear(); @{ Fail = 1; Pass = 0; Total = 0 } } else { Fill-Tests $o2 }
-            $body = if ($sum.Fail) { "$($sum.Fail) check(s) failed. If Iranian sites do not open, press Undo." }
-                    else { "All $($sum.Pass) checks passed. Open an Iranian site and a foreign site to be sure." }
-            $script:Deadline = $script:EnableStarted.AddSeconds($script:IKS.RevertSeconds - 5)
-            Show-Dialog 'Is everything working?' $body 'Keep protection' {
-                $script:Deadline = $null
-                Show-Busy 'Saving...'
-                Start-Job2 'Confirm-IKSKeep' { param($o3, $e3) if ($e3) { Fail-Dialog 'Could not confirm' $e3 } else { Refresh-Status { Hide-Overlay } } }
-            } 'Undo now' { Start-Disable }
-            Show-ListCard
-            Update-Countdown
+            $script:TestBody = if ($sum.Fail) { "$($sum.Fail) check(s) failed. If Iranian sites do not open, press Undo." }
+                               else { "All $($sum.Pass) checks passed. Open an Iranian site and a foreign site to be sure." }
+            # The checks may have used most of the 2 minutes: give the user a full window again
+            Start-Job2 'Reset-IKSRevertTimer' {
+                param($o4, $e4)
+                $next = $(if ($o4) { $o4[0] } else { $null })
+                if ($e4 -or -not ($next -is [datetime])) {
+                    if (-not $e4) { Show-Busy 'Undoing (not confirmed)...'; Wait-Revert; return }   # already undone
+                    $next = $script:EnableStarted.AddSeconds($script:IKS.RevertSeconds)              # keep the old timer
+                }
+                $script:EnableStarted = $next.AddSeconds(-$script:IKS.RevertSeconds)
+                $script:Deadline = $next.AddSeconds(-5)
+                Show-Dialog 'Is everything working?' $script:TestBody 'Keep protection' {
+                    $script:Deadline = $null
+                    Show-Busy 'Saving...'
+                    Start-Job2 'Confirm-IKSKeep' { param($o3, $e3) if ($e3) { Fail-Dialog 'Could not confirm' $e3 } else { Refresh-Status { Hide-Overlay } } }
+                } 'Undo now' { Start-Disable }
+                Show-ListCard
+                Update-Countdown
+            }
         }
     }
 }
@@ -620,12 +657,26 @@ $ui.BtnPreview.add_Click({
     Show-Busy 'Building preview (nothing will be changed)...'
     Start-Job2 'Invoke-IKSPreview' { param($o, $e) if ($e) { Fail-Dialog 'Preview failed' $e } else { Show-Dialog 'What "Turn ON" will do' '' 'Close' $null $null $null ("$($o -join "`r`n")") } }
 })
+function Sync-Bypass { if ($SelfTest) { return }; try { $m = Sync-IKSProxyBypass ([bool]$script:ProtOn); if ($m) { Write-IKSLog "Proxy bypass: $m" } } catch { } }
+$script:ProtOn = $null
 $ui.BtnRefresh.add_Click({
     if (Test-Busy) { return }
     Show-Busy 'Detecting VPN apps and updating the Iran list...'
+    Sync-Bypass
     Start-Job2 'Invoke-IKSSync' { param($o, $e) if ($e) { Fail-Dialog 'Refresh failed' $e } else { Refresh-Status { Hide-Overlay } } }
 })
 $ui.BtnLog.add_Click({ if (Test-Path $script:IKS.LogFile) { Start-Process notepad.exe $script:IKS.LogFile } })
+# Direct sites: edit in Notepad; when Notepad closes, a background sync applies the list
+$ui.BtnDirect.add_Click({
+    if ($script:DirectEditing) { return }
+    New-IKSDirectFile
+    $script:DirectEditing = $true
+    Start-Job2 "Start-Process notepad.exe -ArgumentList ('`"' + `$script:IKS.DirectFile + '`"') -Wait; Invoke-IKSSync -NoScan" {
+        param($o, $e)
+        $script:DirectEditing = $false
+        if ($e) { Fail-Dialog 'Direct sites' $e } else { Sync-Bypass; Refresh-Status }
+    }
+})
 $ui.BtnServers.add_Click({ Initialize-IKSState; if (-not (Test-Path $script:IKS.EndpointsFile)) { '' | Set-Content $script:IKS.EndpointsFile }; Start-Process notepad.exe $script:IKS.EndpointsFile })
 
 # ---- VPN apps dialog -----------------------------------------------------------
@@ -755,8 +806,17 @@ $poll.add_Tick({
     $script:PollN++
     # every 15 s (also in the tray): keeps the tray colour current and lets helpers of VPN apps through quickly
     if (-not (Test-Busy)) { Refresh-Status }
+    if ($script:PollN % 1440 -eq 0) { Start-UpdateCheck }      # every 6 hours while the app runs
 })
 $poll.Start()
+Start-UpdateCheck
+
+# Proxy-mode VPNs: keep the direct sites in the Windows "no proxy" list (the VPN app may rewrite it).
+# Runs on ON/OFF change, Refresh, Direct sites save, and once an hour (~8 ms each)
+$bypass = New-Object Windows.Threading.DispatcherTimer
+$bypass.Interval = [TimeSpan]::FromHours(1)
+$bypass.add_Tick({ Sync-Bypass })
+if (-not $SelfTest) { $bypass.Start() }
 
 $script:App = New-Object Windows.Application
 $script:App.ShutdownMode = [Windows.ShutdownMode]::OnExplicitShutdown
@@ -771,5 +831,5 @@ $script:App.add_DispatcherUnhandledException({
     try { Show-Dialog 'Something went wrong' $msg 'OK' $null $null $null } catch { }
 })
 $null = $script:App.Run($win)
-$timer.Stop(); $poll.Stop()
+$timer.Stop(); $poll.Stop(); $bypass.Stop()
 if (-not $SelfTest) { $script:Single.ReleaseMutex() }

@@ -26,7 +26,7 @@ mistake can never leave you without internet.
 |---|---|
 | VPN | which VPN program is running and in which mode (TUN or proxy) |
 | VPN apps | how many VPN programs may connect; **Manage** opens the list |
-| Iran direct (TUN) | switch; for TUN-mode VPNs, Iranian sites skip the tunnel |
+| Iran direct (TUN) | switch; for TUN-mode VPNs, Iranian sites skip the tunnel; shows `+ N direct sites` |
 | Iran IP list | ranges and date; refreshed weekly |
 | Background guard | last automatic check |
 
@@ -48,8 +48,9 @@ install folders). Programs that an allowed app starts itself, for example MobaXt
 |---|---|
 | Leak test | foreign traffic without VPN, Iranian sites, DNS, WebRTC, IPv6, Iran direct, internet through VPN |
 | Preview | what turning on will do; changes nothing |
-| Refresh | finds new VPN programs, updates the Iran list |
+| Refresh | finds new VPN programs, updates the Iran list, re-applies the direct sites |
 | Log | activity log |
+| Direct sites | your list of sites that skip the VPN, one per line: `example.com`, a URL, an IP or a CIDR. Save and close Notepad to apply. Only while protection is ON. Add every domain the site uses (its CDN or API domains too) |
 | Allowed servers | optional: a server to allow without allowing a whole program (built-in Windows VPN, a SOCKS5 proxy set in a browser extension); one per line: IP, CIDR, domain or share link |
 
 <br clear="right">
@@ -69,6 +70,7 @@ traffic leaves when a VPN dies. So it proves the kill switch without closing you
 |---|---|
 | VPN cannot connect while protection is on | open the VPN, press **Refresh**; still not: **Manage -> Add app** |
 | SOCKS5 in a browser extension does not work | add the proxy server under **Allowed servers** |
+| A direct site still shows the VPN IP | TUN mode: turn off FakeIP in the VPN app. System Proxy mode: keep the app running (it writes the Windows "no proxy" list) and press **Refresh**. The page may load parts from other domains: add them too |
 | Iranian sites go through the VPN | use the VPN in TUN mode and keep **Iran direct** on; VPNs with their own kill switch ("block untunneled traffic") must have it turned off |
 | Windows shows "No internet" while the VPN is off | expected: Windows' connectivity check server is foreign; Iranian sites work |
 | Something is wrong | Start menu -> **Emergency OFF** |
