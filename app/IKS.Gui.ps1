@@ -521,11 +521,41 @@ function Render-Status($s) {
     $ui.ValIran.Text = $(if (-not $s.IranDirect) { 'off' } elseif ($s.Enabled -and $s.IranRoutes) { "$($s.IranRoutes) routes" } elseif ($s.Enabled) { 'no network' } else { 'on with protection' }) +
                        $(if ($s.DirectSites) { " + $($s.DirectSites) direct site$(if ($s.DirectSites -gt 1) { 's' })" } else { '' })
     Set-Dot $ui.DotIran $(if ($s.IranDirect -and $s.Enabled -and $s.IranRoutes) { $T.Green } else { $T.Off })
+    $script:VpnBase = $ui.ValVpn.Text; $script:IranBase = $ui.ValIran.Text
+    Show-Ping
     $ui.ValList.Text = '{0:N0} ranges - {1}' -f $s.IranRanges, $(if ($s.ListUpdated) { $s.ListUpdated.Substring(0, [Math]::Min(10, $s.ListUpdated.Length)) } else { 'unknown' })
     Set-Dot $ui.DotList $(if ($s.IranRanges -gt 300) { $T.Green } else { $T.Red })
     $ui.ValGuard.Text = $(if ($s.GuardInstalled) { if ($s.GuardLastRun) { "Active - checked $($s.GuardLastRun.Substring(11))" } else { 'Active' } } else { 'Not installed' })
     Set-Dot $ui.DotGuard $(if ($s.GuardInstalled) { $T.Green } else { $T.Red })
 }
+
+# ---- live ping: VPN path + Iran path, every 3 s while the window is visible -------------
+$script:Ping = $null; $script:Pinging = $false; $script:PingIranIp = ''
+function Show-Ping {
+    if (-not $script:VpnBase) { return }
+    $dot = "  $([char]0x00B7)  "
+    $p = $script:Ping
+    $live = $p -and $script:Status -and $p.Mode -eq $script:Status.VpnMode
+    $ui.ValVpn.Text = $script:VpnBase + $(if ($live -and $p.Mode -ne 'none') { $dot + (Format-IKSMs $p.Vpn) } else { '' })
+    $ui.ValIran.Text = $script:IranBase + $(if ($p -and $p.IranIp) { $dot + (Format-IKSMs $p.Iran) } else { '' })
+}
+$pingTimer = New-Object Windows.Threading.DispatcherTimer
+$pingTimer.Interval = [TimeSpan]::FromSeconds(3)
+$pingTimer.add_Tick({
+    if ($script:Pinging -or -not $script:Status -or -not $win.IsVisible -or $win.WindowState -eq 'Minimized') { return }
+    $script:Pinging = $true
+    $code = "Get-IKSLatency '{0}' '{1}' '{2}'" -f $script:Status.VpnMode, "$($script:Status.Proxy)".Replace("'", "''"), $script:PingIranIp
+    Start-Job2 $code {
+        param($o, $e)
+        $script:Pinging = $false
+        if ($e -or -not $o) { return }
+        $script:Ping = $o[0]
+        if ($script:Ping.IranIp) { $script:PingIranIp = $script:Ping.IranIp }
+        if ($null -eq $script:Ping.Iran) { $script:PingIranIp = '' }      # re-resolve next time (site moved?)
+        Show-Ping
+    }
+})
+if (-not $SelfTest) { $pingTimer.Start() }
 
 # Refresh-Status { callback }: callback runs after the NEW status is on screen
 $script:StatusBusy = $false; $script:StatusAgain = $false; $script:StatusThen = @()
@@ -840,5 +870,5 @@ $script:App.add_DispatcherUnhandledException({
     try { Show-Dialog 'Something went wrong' $msg 'OK' $null $null $null } catch { }
 })
 $null = $script:App.Run($win)
-$timer.Stop(); $poll.Stop(); $bypass.Stop()
+$timer.Stop(); $poll.Stop(); $bypass.Stop(); $pingTimer.Stop()
 if (-not $SelfTest) { $script:Single.ReleaseMutex() }

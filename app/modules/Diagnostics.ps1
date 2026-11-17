@@ -88,6 +88,57 @@ function Get-IKSStunMappedIp([byte[]]$Data) {
 
 function Resolve-IKSIPv4([string]$Name) { return @((Resolve-IKSIPv4Many @($Name))[$Name]) }
 
+# ---- live latency (the "ping" in the main window) --------------------------
+# TCP handshake time, not ICMP: it is what an app actually waits for, and ICMP is often dropped.
+function Measure-IKSTcpMs([string]$To, [int]$Port = 443, [int]$Ms = 2000) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $r = Test-IKSTcp $null $To $Port $Ms
+    if ($r.Ok) { return [int]$sw.ElapsedMilliseconds }
+    return $null
+}
+
+# Round trip through the VPN's local proxy: CONNECT to a foreign host, then a tiny HEAD request
+# inside the tunnel, timed until its first answer byte. (Many clients - Hiddify/sing-box - answer
+# the CONNECT with 200 at once, before dialling, so the 200 alone measures nothing.)
+function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int]$Ms = 3000) {
+    if ($Proxy -notmatch '^(?:https?://)?([^:/]+):(\d+)') { return $null }
+    $proxyHost = $Matches[1]; $port = [int]$Matches[2]
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $ar = $c.BeginConnect($proxyHost, $port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
+        $c.EndConnect($ar)
+        $st = $c.GetStream(); $st.ReadTimeout = [Math]::Max(1, $Ms - [int]$sw.ElapsedMilliseconds)
+        $req = [Text.Encoding]::ASCII.GetBytes("CONNECT $Target HTTP/1.1`r`nHost: $Target`r`n`r`n")
+        $st.Write($req, 0, $req.Length)
+        $buf = New-Object byte[] 512
+        $n = $st.Read($buf, 0, $buf.Length)
+        if ($n -le 0 -or [Text.Encoding]::ASCII.GetString($buf, 0, $n) -notmatch '^HTTP/1\.[01] 200') { return $null }
+        $th = $Target.Split(':')[0]
+        $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $th`r`nConnection: close`r`n`r`n")
+        $st.Write($head, 0, $head.Length)
+        $n = $st.Read($buf, 0, $buf.Length)
+        if ($n -gt 0 -and [Text.Encoding]::ASCII.GetString($buf, 0, $n) -match '^HTTP/') { return [int]$sw.ElapsedMilliseconds }
+        return $null
+    } catch { return $null }
+    finally { $c.Close() }
+}
+
+# One measurement for the main window. IranIp is cached by the caller (resolved once).
+function Get-IKSLatency([string]$Mode, [string]$Proxy, [string]$IranIp) {
+    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSTcpMs '1.1.1.1' 443 } default { $null } }
+    if (-not $IranIp) {
+        $iran = Read-IKSIranList
+        $dns = Resolve-IKSIPv4Many @('www.aparat.com', 'www.digikala.com', 'www.varzesh3.com') 2000
+        $IranIp = @($dns.Values | ForEach-Object { $_ } | Where-Object { $_ -and (Test-IKSInRanges $_ $iran) })[0]
+    }
+    $ir = if ($IranIp) { Measure-IKSTcpMs $IranIp 443 } else { $null }
+    [pscustomobject]@{ Vpn = $vpn; Iran = $ir; IranIp = "$IranIp"; Mode = $Mode }
+}
+
+function Format-IKSMs($Ms) { if ($null -eq $Ms) { 'timeout' } else { "$Ms ms" } }
+
 function Invoke-IKSTest {
     $res = New-Object System.Collections.Generic.List[object]
     $add = { param($n, $r, $d) $res.Add([pscustomobject]@{ Test = $n; Result = $r; Detail = $d }) }

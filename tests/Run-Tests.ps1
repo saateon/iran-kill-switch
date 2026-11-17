@@ -158,6 +158,25 @@ Check 'old MAPPED-ADDRESS used as a fallback' { (Get-IKSStunMappedIp $plain) -eq
 Check 'short or empty answer -> no address' { (Get-IKSStunMappedIp ([byte[]](1, 1, 0))) -eq '' -and (Get-IKSStunMappedIp $null) -eq '' }
 Check 'STUN request is a 20-byte Binding Request with the magic cookie' { $q = New-IKSStunRequest; $q.Length -eq 20 -and $q[0] -eq 0 -and $q[1] -eq 1 -and $q[4] -eq 0x21 -and $q[7] -eq 0x42 }
 
+Say "`n[live ping]"
+# A tiny fake VPN proxy on loopback that answers CONNECT with 200
+$fl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $fl.Start(); $fport = $fl.LocalEndpoint.Port
+$fake = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 256; $null = $s.Read($b, 0, 256)
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 Connection established`r`n`r`n"); $s.Write($r, 0, $r.Length)
+    $null = $s.Read($b, 0, 256)     # the HEAD request inside the tunnel
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n"); $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 300; $c.Close() }).AddArgument($fl)
+$fh = $fake.BeginInvoke()
+try {
+    $ms = Measure-IKSProxyMs "http://127.0.0.1:$fport"
+    Check "proxy round trip measured through CONNECT ($ms ms)" { $null -ne $ms -and $ms -ge 0 -and $ms -lt 3000 }
+} finally { $null = $fh.AsyncWaitHandle.WaitOne(3000); $fake.Dispose(); $fl.Stop() }
+$dl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $dl.Start(); $dport = $dl.LocalEndpoint.Port; $dl.Stop()
+Check 'proxy that is not running -> timeout, no error' { $null -eq (Measure-IKSProxyMs "http://127.0.0.1:$dport" '1.1.1.1:443' 800) }
+Check 'bad proxy text -> timeout, no error' { $null -eq (Measure-IKSProxyMs 'nonsense') -and $null -eq (Measure-IKSProxyMs '') }
+Check 'TCP handshake time on loopback' { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); try { $m = Measure-IKSTcpMs '127.0.0.1' $l.LocalEndpoint.Port; $null -ne $m -and $m -lt 1000 } finally { $l.Stop() } }
+Check 'no VPN -> no VPN ping; formatting' { $r = Get-IKSLatency 'none' '' '127.0.0.1'; $null -eq $r.Vpn -and (Format-IKSMs $null) -eq 'timeout' -and (Format-IKSMs 42) -eq '42 ms' }
+
 Say "`n[auto-keep after Enable]"
 $okRows = @([pscustomobject]@{ Test = 'Foreign traffic blocked when VPN is down'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'SKIP' })
 Check 'all passed + Iran reachable -> kept without asking' { Test-IKSAutoKeep $okRows }
