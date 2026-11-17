@@ -349,7 +349,8 @@ if (-not $guiRunning) {
         $el = [Windows.Automation.AutomationElement]::FromHandle($h)
         $texts = @($el.FindAll('Descendants', [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
         Check "footer shows 'Made by Mansoor' and v$($script:IKS.Version)" { [bool]($texts | Where-Object { $_ -match "Made by Mansoor" -and $_ -match [regex]::Escape("v$($script:IKS.Version)") }) }
-        Check 'VPN apps row and Iran direct switch present' { ($texts -contains 'VPN apps') -and ($texts -contains 'Iran direct (TUN)') }
+        Check 'Allowed apps row, Iran direct switch and both ping cards present' {
+            ($texts -contains 'Allowed apps') -and ($texts -contains 'Iran direct (TUN)') -and ($texts -contains 'VPN PING') -and ($texts -contains 'DIRECT PING') }
         [void][IKSTest.W]::ShowWindow($h, 6); Start-Sleep 1
         $g2 = Start-Process powershell -ArgumentList $gargs -PassThru -WindowStyle Hidden; $null = $g2.WaitForExit(15000); Start-Sleep 1
         Check 'second launch exits and restores the first window' { $g2.HasExited -and -not [IKSTest.W]::IsIconic($h) }
