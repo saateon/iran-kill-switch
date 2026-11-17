@@ -5,3 +5,9 @@ app/IranKillSwitch.exe
 dist/
 *.log
 *.tmp
+
+# personal / local working notes - never committed
+*.url
+*.lnk
+docs/upgrade/
+CLAUDE.local.md
