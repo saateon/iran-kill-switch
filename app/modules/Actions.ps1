@@ -72,9 +72,18 @@ function Reset-IKSRevertTimer {
     }
 }
 
-function Confirm-IKSKeep {
+# After Enable: keep protection without asking when the self-test proves the PC is not cut off
+# (no check failed AND an Iranian site was reached directly). Anything else -> ask the user.
+function Test-IKSAutoKeep($Rows) {
+    $rows = @($Rows | Where-Object { $_ })
+    if (-not $rows) { return $false }
+    if (@($rows | Where-Object { $_.Result -eq 'FAIL' }).Count) { return $false }
+    return [bool]@($rows | Where-Object { $_.Test -eq 'Iranian sites work directly' -and $_.Result -eq 'PASS' }).Count
+}
+
+function Confirm-IKSKeep([switch]$Auto) {
     Unregister-IKSTask $script:IKS.RevertTask
-    Write-IKSLog 'User confirmed: keep protection'
+    Write-IKSLog $(if ($Auto) { 'Self-test passed: protection kept automatically' } else { 'User confirmed: keep protection' })
     'Protection kept. Auto-undo cancelled.'
 }
 

@@ -147,6 +147,13 @@ Update-IKSVpnApps $st
 Check 'an app removed by the user is not re-added by the next scan' { $st.VpnApps.Path -notcontains $curl.ToLower() }
 Remove-Item Function:\Find-IKSVpnApps; . (Join-Path $root 'modules\Discovery.ps1')
 
+Say "`n[auto-keep after Enable]"
+$okRows = @([pscustomobject]@{ Test = 'Foreign traffic blocked when VPN is down'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'SKIP' })
+Check 'all passed + Iran reachable -> kept without asking' { Test-IKSAutoKeep $okRows }
+Check 'any failed check -> ask the user' { -not (Test-IKSAutoKeep (@($okRows) + [pscustomobject]@{ Test = 'DNS leak'; Result = 'FAIL' })) }
+Check 'Iran not proven reachable -> ask the user' { -not (Test-IKSAutoKeep @($okRows | Where-Object { $_.Test -ne 'Iranian sites work directly' })) }
+Check 'no test result -> ask the user' { -not (Test-IKSAutoKeep @()) -and -not (Test-IKSAutoKeep $null) }
+
 Say "`n[Windows programs are never allowed]"
 Check 'a Windows path is recognised (powershell, curl)' { (Test-IKSSystemPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") -and (Test-IKSSystemPath $sysCurl) -and -not (Test-IKSSystemPath $curl) -and -not (Test-IKSSystemPath "$env:SystemDrive\WindowsApps\x.exe") }
 Check 'adding powershell.exe is refused' { try { Add-IKSVpnApp "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"; $false } catch { "$_" -match 'part of Windows' } }

@@ -578,6 +578,12 @@ function Start-Enable {
             param($o2, $e2)
             Refresh-Status
             $sum = if ($e2) { $ui.OvList.Children.Clear(); @{ Fail = 1; Pass = 0; Total = 0 } } else { Fill-Tests $o2 }
+            # all checks passed and Iran is reachable: keep it without a question (the dialog is only for problems)
+            if (-not $e2 -and (Test-IKSAutoKeep $o2)) {
+                Show-Busy "All $($sum.Pass) checks passed - protection is ON"
+                Start-Job2 'Confirm-IKSKeep -Auto' { param($o3, $e3) if ($e3) { Fail-Dialog 'Could not confirm' $e3 } else { Refresh-Status { Hide-Overlay } } }
+                return
+            }
             $script:TestBody = if ($sum.Fail) { "$($sum.Fail) check(s) failed. If Iranian sites do not open, press Undo." }
                                else { "All $($sum.Pass) checks passed. Open an Iranian site and a foreign site to be sure." }
             # The checks may have used most of the 2 minutes: give the user a full window again
