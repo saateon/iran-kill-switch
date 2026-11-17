@@ -97,6 +97,27 @@ function Measure-IKSTcpMs([string]$To, [int]$Port = 443, [int]$Ms = 2000) {
     return $null
 }
 
+# Real round trip to a server: TCP connect + a HEAD request, timed to the first answer byte.
+# Needed in TUN mode: sing-tun / tun2socks complete the TCP handshake locally (a fake ~10 ms),
+# so only an answer from the far end measures the tunnel.
+function Measure-IKSHttpMs([string]$To, [int]$Port = 80, [int]$Ms = 5000) {
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $ar = $c.BeginConnect($To, $Port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
+        $c.EndConnect($ar)
+        $st = $c.GetStream(); $st.ReadTimeout = [Math]::Max(1, $Ms - [int]$sw.ElapsedMilliseconds)
+        $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $To`r`nConnection: close`r`n`r`n")
+        $st.Write($head, 0, $head.Length)
+        $buf = New-Object byte[] 256
+        $n = $st.Read($buf, 0, $buf.Length)
+        if ($n -gt 0 -and [Text.Encoding]::ASCII.GetString($buf, 0, $n) -match '^HTTP/') { return [int]$sw.ElapsedMilliseconds }
+        return $null
+    } catch { return $null }
+    finally { $c.Close() }
+}
+
 # Round trip through the VPN's local proxy: CONNECT to a foreign host, then a tiny HEAD request
 # inside the tunnel, timed until its first answer byte. (Many clients - Hiddify/sing-box - answer
 # the CONNECT with 200 at once, before dialling, so the 200 alone measures nothing.)
@@ -127,7 +148,7 @@ function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int
 
 # One measurement for the main window. IranIp is cached by the caller (resolved once).
 function Get-IKSLatency([string]$Mode, [string]$Proxy, [string]$IranIp) {
-    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSTcpMs '1.1.1.1' 443 5000 } default { $null } }
+    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSHttpMs '1.1.1.1' 80 5000 } default { $null } }
     if (-not $IranIp) {
         $iran = Read-IKSIranList
         $dns = Resolve-IKSIPv4Many @('www.aparat.com', 'www.digikala.com', 'www.varzesh3.com') 2000

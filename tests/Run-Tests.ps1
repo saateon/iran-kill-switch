@@ -192,6 +192,13 @@ try {
 $dl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $dl.Start(); $dport = $dl.LocalEndpoint.Port; $dl.Stop()
 Check 'proxy that is not running -> timeout, no error' { $null -eq (Measure-IKSProxyMs "http://127.0.0.1:$dport" '1.1.1.1:443' 800) }
 Check 'bad proxy text -> timeout, no error' { $null -eq (Measure-IKSProxyMs 'nonsense') -and $null -eq (Measure-IKSProxyMs '') }
+$hl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $hl.Start(); $hport = $hl.LocalEndpoint.Port
+$hs = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 256; $null = $s.Read($b, 0, 256); Start-Sleep -Milliseconds 120
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n"); $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 200; $c.Close() }).AddArgument($hl)
+$hh = $hs.BeginInvoke()
+try { $hm = Measure-IKSHttpMs '127.0.0.1' $hport 3000; Check "TUN ping waits for the far end's answer, not the handshake ($hm ms)" { $null -ne $hm -and $hm -ge 100 } }
+finally { $null = $hh.AsyncWaitHandle.WaitOne(3000); $hs.Dispose(); $hl.Stop() }
 Check 'TCP handshake time on loopback' { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); try { $m = Measure-IKSTcpMs '127.0.0.1' $l.LocalEndpoint.Port; $null -ne $m -and $m -lt 1000 } finally { $l.Stop() } }
 Check 'no VPN -> no VPN ping; formatting' { $r = Get-IKSLatency 'none' '' '127.0.0.1'; $null -eq $r.Vpn -and (Format-IKSMs $null) -eq 'timeout' -and (Format-IKSMs 42) -eq '42 ms' }
 
