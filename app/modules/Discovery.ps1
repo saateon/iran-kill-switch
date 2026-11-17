@@ -78,12 +78,30 @@ function Find-IKSVendorSiblings([string[]]$AllowedPaths) {
     return $found
 }
 
+# Windows' own programs (powershell, cmd, curl...) are shared by every script on the PC:
+# allowing one would let ANY script bypass the kill switch with the real IP.
+function Test-IKSSystemPath([string]$Path) {
+    if (-not $Path) { return $false }
+    return $Path.ToLower().StartsWith($env:SystemRoot.ToLower().TrimEnd('\') + '\')
+}
+
 # Keeps the user's own entries, refreshes the automatic ones. Entry: { Path, Name, Source = auto|user|child }
-# Child programs are followed on every call (cheap), even with -NoScan.
+# Child programs are followed on every call (cheap), even with -NoScan, and stay allowed
+# only while they are running (a one-off tool started once must not stay allowed forever).
+# Entries under %SystemRoot% are dropped (older versions let the user add powershell.exe).
 function Update-IKSVpnApps($Settings, [switch]$NoScan) {
+    $running = @{}
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { try { if ($p.Path) { $running[$p.Path.ToLower()] = $true } } catch { } }
     $list = @{}
     foreach ($a in $Settings.VpnApps) {
-        if ($a.Source -in 'user', 'child' -or $NoScan) { $list[$a.Path.ToLower()] = [pscustomobject]@{ Path = $a.Path; Name = $a.Name; Source = $a.Source } }
+        $k = "$($a.Path)".ToLower()
+        if (Test-IKSSystemPath $k) {
+            if (-not $script:IKSDroppedSystem) { $script:IKSDroppedSystem = @{} }
+            if (-not $script:IKSDroppedSystem.ContainsKey($k)) { $script:IKSDroppedSystem[$k] = $true; Write-IKSLog "Unsafe allowed app dropped (Windows program, would let every script bypass): $k" 'WARN' }
+            continue
+        }
+        if ($a.Source -eq 'child' -and -not $running.ContainsKey($k)) { continue }
+        if ($a.Source -in 'user', 'child' -or $NoScan) { $list[$k] = [pscustomobject]@{ Path = $a.Path; Name = $a.Name; Source = $a.Source } }
     }
     if (-not $NoScan) {
         $auto = Find-IKSVpnApps

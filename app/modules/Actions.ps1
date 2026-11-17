@@ -80,6 +80,9 @@ function Confirm-IKSKeep {
 
 function Add-IKSVpnApp([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $Path -notmatch '(?i)\.exe$') { throw "Not a program file: $Path" }
+    if (Test-IKSSystemPath $Path) {
+        throw "$(Split-Path $Path -Leaf) is part of Windows. Allowing it would let every script and tool on this PC bypass the kill switch with your real IP. Add the VPN program itself instead."
+    }
     Invoke-IKSLocked {
         $s = Read-IKSSettings
         $s.VpnApps = @($s.VpnApps | Where-Object { $_.Path -ne $Path.ToLower() }) +
@@ -176,7 +179,7 @@ function Get-IKSStatus {
     $running = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { try { "$($_.Path)".ToLower() } catch { '' } } | Where-Object { $_ })
     $apps = @($s.VpnApps | ForEach-Object {
         [pscustomobject]@{ Name = $_.Name; Path = $_.Path; Source = $_.Source
-                           Exists = [bool](Test-Path -LiteralPath $_.Path -PathType Leaf); Running = $running -contains $_.Path.ToLower() } })
+                           Exists = $(try { [bool](Test-Path -LiteralPath $_.Path -PathType Leaf) } catch { $true }); Running = $running -contains $_.Path.ToLower() } })
     $proxy = Get-IKSLocalProxy
     $guard = Get-IKSTaskInfo $script:IKS.GuardTask
     $revert = Get-IKSTaskInfo $script:IKS.RevertTask

@@ -24,7 +24,10 @@ function Skip([string]$Name, [string]$Why) { $script:skip++; Say "  SKIP  $Name 
 function Rng([string]$t) { return , (ConvertTo-IKSRange $t) }
 function L([object[]]$pairs) { $l = New-IKSRangeList; foreach ($p in $pairs) { $l.Add([long[]]$p) }; return , $l }
 $MAX = [long]4294967295
-$curl = "$env:SystemRoot\System32\curl.exe"
+# A copy outside %SystemRoot% plays the VPN app (Windows' own programs can never be allowed)
+$sysCurl = "$env:SystemRoot\System32\curl.exe"
+$curlDir = Join-Path ([IO.Path]::GetTempPath()) "iks-curl-$PID"; New-Item -ItemType Directory -Force $curlDir | Out-Null
+$curl = Join-Path $curlDir 'curl.exe'; Copy-Item $sysCurl $curl -Force
 if ($Out) { Set-Content -Path $Out -Value "Iran Kill Switch tests $(Get-Date -f s)" -Encoding UTF8 }
 
 Say "`n[source files]"
@@ -143,6 +146,17 @@ $st.VpnApps = @($st.VpnApps | Where-Object { $_.Path -ne $curl.ToLower() }); $st
 Update-IKSVpnApps $st
 Check 'an app removed by the user is not re-added by the next scan' { $st.VpnApps.Path -notcontains $curl.ToLower() }
 Remove-Item Function:\Find-IKSVpnApps; . (Join-Path $root 'modules\Discovery.ps1')
+
+Say "`n[Windows programs are never allowed]"
+Check 'a Windows path is recognised (powershell, curl)' { (Test-IKSSystemPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") -and (Test-IKSSystemPath $sysCurl) -and -not (Test-IKSSystemPath $curl) -and -not (Test-IKSSystemPath "$env:SystemDrive\WindowsApps\x.exe") }
+Check 'adding powershell.exe is refused' { try { Add-IKSVpnApp "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"; $false } catch { "$_" -match 'part of Windows' } }
+$st = @{ VpnApps = @([pscustomobject]@{ Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe".ToLower(); Name = 'powershell'; Source = 'user' },
+                     [pscustomobject]@{ Path = $curl.ToLower(); Name = 'curl'; Source = 'user' }); IgnoredApps = @() }
+Update-IKSVpnApps $st -NoScan
+Check 'an old powershell.exe entry is dropped, other user apps stay' { ($st.VpnApps.Path -notcontains "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe".ToLower()) -and ($st.VpnApps.Path -contains $curl.ToLower()) }
+$st = @{ VpnApps = @([pscustomobject]@{ Path = 'c:\nowhere\oneoff.exe'; Name = 'oneoff (via x)'; Source = 'child' }); IgnoredApps = @() }
+Update-IKSVpnApps $st -NoScan
+Check 'a helper that is no longer running is no longer allowed' { @($st.VpnApps).Count -eq 0 }
 
 Say "`n[helper processes of allowed apps]"
 $hd = Join-Path ([IO.Path]::GetTempPath()) "iks-child-$PID"; New-Item -ItemType Directory -Force $hd | Out-Null
@@ -291,5 +305,6 @@ if ($WfpLive) {
 }
 
 Remove-Item $tmpState -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $curlDir -Recurse -Force -ErrorAction SilentlyContinue
 Say "`nResult: $script:pass passed, $script:fail failed, $script:skip skipped" $(if ($script:fail) { 'Red' } else { 'Green' })
 exit $(if ($script:fail) { 1 } else { 0 })
