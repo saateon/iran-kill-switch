@@ -85,6 +85,40 @@ function Test-IKSSystemPath([string]$Path) {
     return $Path.ToLower().StartsWith($env:SystemRoot.ToLower().TrimEnd('\') + '\')
 }
 
+# A VPN tool started by a script or shortcut (.bat/.cmd/.ps1/.lnk): the script itself never
+# touches the network, the programs it starts do (e.g. xray_no_window.cmd -> .ps1 -> xray.exe).
+# Returns the existing .exe files it starts, following nested scripts 3 levels deep.
+# Windows' own programs (powershell, cmd...) are never returned.
+function Get-IKSScriptPrograms([string]$Path, [int]$Depth = 0) {
+    $found = @{}
+    if ($Depth -gt 3 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $full = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $dir = Split-Path $full -Parent
+    $ext = [IO.Path]::GetExtension($full).ToLower()
+    $refs = @()
+    if ($ext -eq '.exe') { $refs = @($full) }
+    elseif ($ext -eq '.lnk') {
+        try { $l = (New-Object -ComObject WScript.Shell).CreateShortcut($full); $refs = @($l.TargetPath) + @([regex]::Matches("$($l.Arguments)", '(?i)"[^"]+\.(?:exe|bat|cmd|ps1)"|[^\s"]+\.(?:exe|bat|cmd|ps1)\b') | ForEach-Object { $_.Value })
+              if ($l.WorkingDirectory) { $dir = $l.WorkingDirectory } } catch { }
+    } elseif ($ext -in '.bat', '.cmd', '.ps1') {
+        $text = try { [IO.File]::ReadAllText($full) } catch { '' }
+        $refs = @([regex]::Matches($text, '(?i)"[^"\r\n]+?\.(?:exe|bat|cmd|ps1)"|''[^''\r\n]+?\.(?:exe|bat|cmd|ps1)''|[^\s"''=,;()|&<>]+?\.(?:exe|bat|cmd|ps1)\b') | ForEach-Object { $_.Value })
+    }
+    foreach ($r in $refs) {
+        $p = "$r".Trim().Trim('"', "'")
+        if (-not $p) { continue }
+        $p = $p -replace '(?i)%~dp0\\?', ($dir + '\') -replace '(?i)\$PSScriptRoot\\?', ($dir + '\')
+        $p = [Environment]::ExpandEnvironmentVariables($p)
+        if (-not [IO.Path]::IsPathRooted($p)) { $p = Join-Path $dir ($p -replace '^\.[\\/]', '') }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }      # bare names on PATH are Windows tools: skipped
+        $p = (Resolve-Path -LiteralPath $p).ProviderPath
+        if ($p -eq $full) { continue }
+        if ($p -match '(?i)\.exe$') { if (-not (Test-IKSSystemPath $p)) { $found[$p.ToLower()] = $true } }
+        else { foreach ($e in (Get-IKSScriptPrograms $p ($Depth + 1))) { $found[$e] = $true } }
+    }
+    return @($found.Keys | Sort-Object)
+}
+
 # Keeps the user's own entries, refreshes the automatic ones. Entry: { Path, Name, Source = auto|user|child }
 # Child programs are followed on every call (cheap), even with -NoScan, and stay allowed
 # only while they are running (a one-off tool started once must not stay allowed forever).

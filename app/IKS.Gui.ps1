@@ -522,6 +522,7 @@ function Render-Status($s) {
                        $(if ($s.DirectSites) { " + $($s.DirectSites) direct site$(if ($s.DirectSites -gt 1) { 's' })" } else { '' })
     Set-Dot $ui.DotIran $(if ($s.IranDirect -and $s.Enabled -and $s.IranRoutes) { $T.Green } else { $T.Off })
     $script:VpnBase = $ui.ValVpn.Text; $script:IranBase = $ui.ValIran.Text
+    $script:VpnShort = $(if ($s.VpnMode -eq 'proxy') { "$clients - proxy".Trim(' -') } elseif ($s.VpnMode -eq 'tun') { "$clients - TUN".Trim(' -') } else { '' })
     Show-Ping
     $ui.ValList.Text = '{0:N0} ranges - {1}' -f $s.IranRanges, $(if ($s.ListUpdated) { $s.ListUpdated.Substring(0, [Math]::Min(10, $s.ListUpdated.Length)) } else { 'unknown' })
     Set-Dot $ui.DotList $(if ($s.IranRanges -gt 300) { $T.Green } else { $T.Red })
@@ -536,8 +537,15 @@ function Show-Ping {
     $dot = "  $([char]0x00B7)  "
     $p = $script:Ping
     $live = $p -and $script:Status -and $p.Mode -eq $script:Status.VpnMode
-    $ui.ValVpn.Text = $script:VpnBase + $(if ($live -and $p.Mode -ne 'none') { $dot + (Format-IKSMs $p.Vpn) } else { '' })
-    $ui.ValIran.Text = $script:IranBase + $(if ($p -and $p.IranIp) { $dot + (Format-IKSMs $p.Iran) } else { '' })
+    $vpnText = $script:VpnBase
+    if ($live -and $p.Mode -ne 'none') {
+        # short form so the number always fits: "Hiddify - proxy  .  tunnel 820 ms"
+        if ($script:VpnShort) { $vpnText = $script:VpnShort }
+        $vpnText += $dot + 'tunnel ' + (Format-IKSMs $p.Vpn)
+    }
+    $ui.ValVpn.Text = $vpnText
+    $ui.ValVpn.ToolTip = "$script:VpnBase`nPing inside the VPN tunnel (to a foreign server): $(if ($p) { Format-IKSMs $p.Vpn } else { '...' })"
+    $ui.ValIran.Text = $script:IranBase + $(if ($p -and $p.IranIp) { $dot + 'direct ' + (Format-IKSMs $p.Iran) } else { '' })
 }
 $pingTimer = New-Object Windows.Threading.DispatcherTimer
 $pingTimer.Interval = [TimeSpan]::FromSeconds(3)
@@ -748,7 +756,9 @@ function Show-Apps {
     }
     Show-Dialog 'VPN apps allowed through the kill switch' 'These programs may connect anywhere; everything else reaches foreign sites only through the tunnel. If your VPN cannot connect: open it, press Refresh, or add its program with Add app.' 'Add app...' {
         $dlg = New-Object Microsoft.Win32.OpenFileDialog
-        $dlg.Title = 'Choose the VPN program (.exe)'; $dlg.Filter = 'Programs (*.exe)|*.exe'
+        $dlg.Title = 'Choose the VPN program, or the script / shortcut that starts it'
+        $dlg.Filter = 'Programs, scripts and shortcuts (*.exe;*.bat;*.cmd;*.ps1;*.lnk)|*.exe;*.bat;*.cmd;*.ps1;*.lnk|Programs (*.exe)|*.exe'
+        $dlg.DereferenceLinks = $false       # a .lnk is resolved by the app, also when it points to a script
         if ($dlg.ShowDialog($win)) {
             Show-Busy 'Adding VPN app...'
             Start-Job2 ("Add-IKSVpnApp '{0}'" -f $dlg.FileName.Replace("'", "''")) { param($o, $e) if ($e) { Fail-Dialog 'Could not add' $e } else { Refresh-Status { Show-Apps } } }

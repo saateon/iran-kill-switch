@@ -100,7 +100,7 @@ function Measure-IKSTcpMs([string]$To, [int]$Port = 443, [int]$Ms = 2000) {
 # Round trip through the VPN's local proxy: CONNECT to a foreign host, then a tiny HEAD request
 # inside the tunnel, timed until its first answer byte. (Many clients - Hiddify/sing-box - answer
 # the CONNECT with 200 at once, before dialling, so the 200 alone measures nothing.)
-function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int]$Ms = 3000) {
+function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int]$Ms = 5000) {
     if ($Proxy -notmatch '^(?:https?://)?([^:/]+):(\d+)') { return $null }
     $proxyHost = $Matches[1]; $port = [int]$Matches[2]
     $c = New-Object Net.Sockets.TcpClient
@@ -127,7 +127,7 @@ function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int
 
 # One measurement for the main window. IranIp is cached by the caller (resolved once).
 function Get-IKSLatency([string]$Mode, [string]$Proxy, [string]$IranIp) {
-    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSTcpMs '1.1.1.1' 443 } default { $null } }
+    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSTcpMs '1.1.1.1' 443 5000 } default { $null } }
     if (-not $IranIp) {
         $iran = Read-IKSIranList
         $dns = Resolve-IKSIPv4Many @('www.aparat.com', 'www.digikala.com', 'www.varzesh3.com') 2000

@@ -87,20 +87,31 @@ function Confirm-IKSKeep([switch]$Auto) {
     'Protection kept. Auto-undo cancelled.'
 }
 
+# Accepts a program (.exe) or a launcher (.bat/.cmd/.ps1/.lnk): for a launcher, the programs it
+# starts are allowed (never PowerShell/cmd themselves).
 function Add-IKSVpnApp([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $Path -notmatch '(?i)\.exe$') { throw "Not a program file: $Path" }
-    if (Test-IKSSystemPath $Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $Path -notmatch '(?i)\.(exe|bat|cmd|ps1|lnk)$') { throw "Not a program, script or shortcut: $Path" }
+    $isExe = $Path -match '(?i)\.exe$'
+    if ($isExe -and (Test-IKSSystemPath $Path)) {
         throw "$(Split-Path $Path -Leaf) is part of Windows. Allowing it would let every script and tool on this PC bypass the kill switch with your real IP. Add the VPN program itself instead."
     }
+    $exes = if ($isExe) { @($Path.ToLower()) } else { @(Get-IKSScriptPrograms $Path) }
+    if (-not $exes) {
+        throw "No VPN program was found inside $(Split-Path $Path -Leaf). It only starts Windows tools (PowerShell, cmd...), which can never be allowed. Add the .exe it runs instead."
+    }
+    $via = if ($isExe) { '' } else { " (via $(Split-Path $Path -Leaf))" }
     Invoke-IKSLocked {
         $s = Read-IKSSettings
-        $s.VpnApps = @($s.VpnApps | Where-Object { $_.Path -ne $Path.ToLower() }) +
-                     [pscustomobject]@{ Path = $Path.ToLower(); Name = [IO.Path]::GetFileNameWithoutExtension($Path); Source = 'user' }
-        $s.IgnoredApps = @($s.IgnoredApps | Where-Object { $_ -ne $Path.ToLower() })
+        foreach ($e in $exes) {
+            $s.VpnApps = @($s.VpnApps | Where-Object { $_.Path -ne $e }) +
+                         [pscustomobject]@{ Path = $e; Name = [IO.Path]::GetFileNameWithoutExtension($e) + $via; Source = 'user' }
+            $s.IgnoredApps = @($s.IgnoredApps | Where-Object { $_ -ne $e })
+        }
         Save-IKSSettings $s
-        Write-IKSLog "VPN app added: $Path"
+        Write-IKSLog "VPN app added: $Path$(if (-not $isExe) { ' -> ' + ($exes -join ', ') })"
     }
-    Invoke-IKSSync
+    $null = Invoke-IKSSync
+    "Allowed: $(($exes | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')"
 }
 
 function Remove-IKSVpnApp([string]$Path) {

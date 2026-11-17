@@ -158,6 +158,24 @@ Check 'old MAPPED-ADDRESS used as a fallback' { (Get-IKSStunMappedIp $plain) -eq
 Check 'short or empty answer -> no address' { (Get-IKSStunMappedIp ([byte[]](1, 1, 0))) -eq '' -and (Get-IKSStunMappedIp $null) -eq '' }
 Check 'STUN request is a 20-byte Binding Request with the magic cookie' { $q = New-IKSStunRequest; $q.Length -eq 20 -and $q[0] -eq 0 -and $q[1] -eq 1 -and $q[4] -eq 0x21 -and $q[7] -eq 0x42 }
 
+Say "`n[VPN tools started by a script or shortcut]"
+$sd = Join-Path ([IO.Path]::GetTempPath()) "iks-script-$PID"; New-Item -ItemType Directory -Force (Join-Path $sd 'bin') | Out-Null
+try {
+    Copy-Item $curl (Join-Path $sd 'xray.exe'); Copy-Item $curl (Join-Path $sd 'bin\tun2socks.exe')
+    Set-Content (Join-Path $sd 'start.cmd') 'powershell.exe -ExecutionPolicy Bypass -File ".\start.ps1"' -Encoding ascii
+    Set-Content (Join-Path $sd 'start.ps1') 'Start-Process -FilePath ".\xray.exe" -ArgumentList "-config .\config.json" -WindowStyle Hidden' -Encoding ascii
+    Set-Content (Join-Path $sd 'other.bat') "@echo off`r`nstart `"`" `"%~dp0bin\tun2socks.exe`" -device x`r`ncurl.exe http://example.com" -Encoding ascii
+    Set-Content (Join-Path $sd 'only-ps.cmd') 'powershell -NoProfile -Command "Invoke-WebRequest http://example.com"' -Encoding ascii
+    $xr = (Join-Path $sd 'xray.exe').ToLower()
+    Check 'cmd -> ps1 -> xray.exe: xray.exe found, PowerShell is not' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'start.cmd')); $r.Count -eq 1 -and $r[0] -eq $xr }
+    Check '%~dp0 path in a .bat is resolved; bare curl.exe (Windows) skipped' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'other.bat')); $r.Count -eq 1 -and $r[0] -eq (Join-Path $sd 'bin\tun2socks.exe').ToLower() }
+    Check 'a script that only runs PowerShell gives nothing to allow' { @(Get-IKSScriptPrograms (Join-Path $sd 'only-ps.cmd')).Count -eq 0 }
+    Check 'adding such a script is refused with a clear reason' { try { $null = Add-IKSVpnApp (Join-Path $sd 'only-ps.cmd'); $false } catch { "$_" -match 'No VPN program was found' } }
+    $lnk = Join-Path $sd 'Start VPN.lnk'
+    $w = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $w.TargetPath = (Join-Path $sd 'start.cmd'); $w.WorkingDirectory = $sd; $w.Save()
+    Check 'shortcut -> cmd -> ps1 -> xray.exe' { @(Get-IKSScriptPrograms $lnk) -contains $xr }
+} finally { Remove-Item $sd -Recurse -Force -ErrorAction SilentlyContinue }
+
 Say "`n[live ping]"
 # A tiny fake VPN proxy on loopback that answers CONNECT with 200
 $fl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $fl.Start(); $fport = $fl.LocalEndpoint.Port
