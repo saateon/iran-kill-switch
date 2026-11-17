@@ -158,6 +158,14 @@ function Get-IKSLatency([string]$Mode, [string]$Proxy, [string]$IranIp) {
     [pscustomobject]@{ Vpn = $vpn; Iran = $ir; IranIp = "$IranIp"; Mode = $Mode }
 }
 
+# Colour of a ping: good < 300 ms, ok < 1000 ms, slow above, down = no answer
+function Get-IKSPingLevel($Ms) {
+    if ($null -eq $Ms) { return 'down' }
+    if ($Ms -lt 300) { return 'good' }
+    if ($Ms -lt 1000) { return 'ok' }
+    return 'slow'
+}
+
 function Format-IKSMs($Ms) { if ($null -eq $Ms) { 'timeout' } else { "$Ms ms" } }
 
 function Invoke-IKSTest {

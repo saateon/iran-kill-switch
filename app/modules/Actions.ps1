@@ -87,15 +87,65 @@ function Confirm-IKSKeep([switch]$Auto) {
     'Protection kept. Auto-undo cancelled.'
 }
 
+# PowerShell arguments a launcher uses, or $null when it does not run PowerShell itself.
+# Relative paths become absolute (%~dp0, $PSScriptRoot, .\x.ps1); %* is dropped.
+function Get-IKSPowerShellArgs([string]$Path, [int]$Depth = 0) {
+    if ($Depth -gt 3 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $full = (Resolve-Path -LiteralPath $Path).ProviderPath; $dir = Split-Path $full -Parent
+    switch -regex ([IO.Path]::GetExtension($full).ToLower()) {
+        '^\.ps1$' { return "-NoProfile -ExecutionPolicy Bypass -File `"$full`"" }
+        '^\.(bat|cmd)$' {
+            foreach ($line in [IO.File]::ReadAllLines($full)) {
+                if ($line -match '(?i)\b(?:powershell|pwsh)(?:\.exe)?"?\s+(.*)$') {
+                    $a = $Matches[1] -replace '(?i)%~dp0\\?', ($dir + '\') -replace '\s*%\*', ''
+                    return $a.Trim()
+                }
+            }
+            return $null
+        }
+        '^\.lnk$' {
+            try { $l = (New-Object -ComObject WScript.Shell).CreateShortcut($full) } catch { return $null }
+            if ("$($l.TargetPath)" -match '(?i)\\(powershell|pwsh)\.exe$') { return "$($l.Arguments)" }
+            return Get-IKSPowerShellArgs $l.TargetPath ($Depth + 1)
+        }
+    }
+    return $null
+}
+
+# A tool written in PowerShell (no .exe of its own, e.g. HubDesk.bat -> Start.ps1): give it a
+# PRIVATE copy of powershell.exe that only this tool uses, allow that copy, and put a shortcut on
+# the desktop that starts the tool with it. Windows' own powershell.exe stays blocked.
+function New-IKSScriptLauncher([string]$Path, [string]$ShortcutDir = [Environment]::GetFolderPath('Desktop')) {
+    $psArgs = Get-IKSPowerShellArgs $Path
+    if (-not $psArgs) { return $null }
+    $name = ([IO.Path]::GetFileNameWithoutExtension($Path) -replace '[^\w\-. ]', '').Trim()
+    if (-not $name) { $name = 'tool' }
+    $dir = Join-Path $script:IKS.StateDir 'launchers'
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $exe = Join-Path $dir "$name.exe"
+    Copy-Item "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $exe -Force
+    $lnk = Join-Path $ShortcutDir "$name (Kill Switch).lnk"
+    $w = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+    $w.TargetPath = $exe; $w.Arguments = $psArgs; $w.WorkingDirectory = (Split-Path (Resolve-Path -LiteralPath $Path).ProviderPath -Parent)
+    $w.Description = "$name - allowed by Iran Kill Switch"; $w.WindowStyle = 7; $w.Save()
+    return [pscustomobject]@{ Exe = $exe.ToLower(); Shortcut = $lnk; Args = $psArgs }
+}
+
 # Accepts a program (.exe) or a launcher (.bat/.cmd/.ps1/.lnk): for a launcher, the programs it
-# starts are allowed (never PowerShell/cmd themselves).
-function Add-IKSVpnApp([string]$Path) {
+# starts are allowed (never PowerShell/cmd themselves). A pure-PowerShell tool gets its own
+# private PowerShell copy + desktop shortcut.
+function Add-IKSVpnApp([string]$Path, [string]$ShortcutDir = [Environment]::GetFolderPath('Desktop')) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $Path -notmatch '(?i)\.(exe|bat|cmd|ps1|lnk)$') { throw "Not a program, script or shortcut: $Path" }
     $isExe = $Path -match '(?i)\.exe$'
     if ($isExe -and (Test-IKSSystemPath $Path)) {
         throw "$(Split-Path $Path -Leaf) is part of Windows. Allowing it would let every script and tool on this PC bypass the kill switch with your real IP. Add the VPN program itself instead."
     }
     $exes = if ($isExe) { @($Path.ToLower()) } else { @(Get-IKSScriptPrograms $Path) }
+    $launcher = $null
+    if (-not $exes) {
+        $launcher = New-IKSScriptLauncher $Path $ShortcutDir
+        if ($launcher) { $exes = @($launcher.Exe) }
+    }
     if (-not $exes) {
         throw "No VPN program was found inside $(Split-Path $Path -Leaf). It only starts Windows tools (PowerShell, cmd...), which can never be allowed. Add the .exe it runs instead."
     }
@@ -111,7 +161,8 @@ function Add-IKSVpnApp([string]$Path) {
         Write-IKSLog "VPN app added: $Path$(if (-not $isExe) { ' -> ' + ($exes -join ', ') })"
     }
     $null = Invoke-IKSSync
-    "Allowed: $(($exes | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')"
+    if ($launcher) { "$(Split-Path $Path -Leaf) is a PowerShell tool. Start it from the new desktop shortcut '$(Split-Path $launcher.Shortcut -Leaf)' - only that copy may connect." }
+    else { "Allowed: $(($exes | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')" }
 }
 
 function Remove-IKSVpnApp([string]$Path) {

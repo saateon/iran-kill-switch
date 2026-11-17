@@ -177,8 +177,16 @@ try {
     $xr = (Join-Path $sd 'xray.exe').ToLower()
     Check 'cmd -> ps1 -> xray.exe: xray.exe found, PowerShell is not' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'start.cmd')); $r.Count -eq 1 -and $r[0] -eq $xr }
     Check '%~dp0 path in a .bat is resolved; bare curl.exe (Windows) skipped' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'other.bat')); $r.Count -eq 1 -and $r[0] -eq (Join-Path $sd 'bin\tun2socks.exe').ToLower() }
-    Check 'a script that only runs PowerShell gives nothing to allow' { @(Get-IKSScriptPrograms (Join-Path $sd 'only-ps.cmd')).Count -eq 0 }
-    Check 'adding such a script is refused with a clear reason' { try { $null = Add-IKSVpnApp (Join-Path $sd 'only-ps.cmd'); $false } catch { "$_" -match 'No VPN program was found' } }
+    Check 'a script that only runs PowerShell gives no .exe' { @(Get-IKSScriptPrograms (Join-Path $sd 'only-ps.cmd')).Count -eq 0 }
+    Set-Content (Join-Path $sd 'Hub.bat') "@echo off`r`nstart `"`" powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"%~dp0windows\Start.ps1`" %*" -Encoding ascii
+    Check 'PowerShell arguments of a .bat: %~dp0 made absolute, %* dropped' { (Get-IKSPowerShellArgs (Join-Path $sd 'Hub.bat')) -eq "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sd\windows\Start.ps1`"" }
+    $lnkDir = Join-Path $sd 'desk'; New-Item -ItemType Directory -Force $lnkDir | Out-Null
+    $la = New-IKSScriptLauncher (Join-Path $sd 'Hub.bat') $lnkDir
+    Check 'pure-PowerShell tool -> private PowerShell copy (not Windows'' own) + shortcut' {
+        $la -and (Test-Path $la.Exe) -and -not (Test-IKSSystemPath $la.Exe) -and $la.Exe.StartsWith($script:IKS.StateDir.ToLower()) -and (Test-Path $la.Shortcut) -and
+        ((New-Object -ComObject WScript.Shell).CreateShortcut($la.Shortcut).TargetPath -eq (Get-Item $la.Exe).FullName) }
+    Set-Content (Join-Path $sd 'cmd-only.bat') "@echo off`r`nping 127.0.0.1" -Encoding ascii
+    Check 'a script with neither a program nor PowerShell is refused with a clear reason' { try { $null = Add-IKSVpnApp (Join-Path $sd 'cmd-only.bat') $lnkDir; $false } catch { "$_" -match 'No VPN program was found' } }
     $lnk = Join-Path $sd 'Start VPN.lnk'
     $w = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $w.TargetPath = (Join-Path $sd 'start.cmd'); $w.WorkingDirectory = $sd; $w.Save()
     Check 'shortcut -> cmd -> ps1 -> xray.exe' { @(Get-IKSScriptPrograms $lnk) -contains $xr }
@@ -208,6 +216,7 @@ $hh = $hs.BeginInvoke()
 try { $hm = Measure-IKSHttpMs '127.0.0.1' $hport 3000; Check "TUN ping waits for the far end's answer, not the handshake ($hm ms)" { $null -ne $hm -and $hm -ge 100 } }
 finally { $null = $hh.AsyncWaitHandle.WaitOne(3000); $hs.Dispose(); $hl.Stop() }
 Check 'TCP handshake time on loopback' { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); try { $m = Measure-IKSTcpMs '127.0.0.1' $l.LocalEndpoint.Port; $null -ne $m -and $m -lt 1000 } finally { $l.Stop() } }
+Check 'ping colours: good / ok / slow / down' { (Get-IKSPingLevel 42) -eq 'good' -and (Get-IKSPingLevel 800) -eq 'ok' -and (Get-IKSPingLevel 1057) -eq 'slow' -and (Get-IKSPingLevel $null) -eq 'down' }
 Check 'no VPN -> no VPN ping; formatting' { $r = Get-IKSLatency 'none' '' '127.0.0.1'; $null -eq $r.Vpn -and (Format-IKSMs $null) -eq 'timeout' -and (Format-IKSMs 42) -eq '42 ms' }
 
 Say "`n[auto-keep after Enable]"
