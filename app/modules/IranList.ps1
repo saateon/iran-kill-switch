@@ -22,15 +22,7 @@ function Get-IKSListInfo([string]$Path = $script:IKS.IranFile) {
     return $info
 }
 
-# First local proxy port of a running VPN client (proxy-mode clients)
-function Get-IKSLocalProxy {
-    try {
-        $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LocalAddress -in @('127.0.0.1', '0.0.0.0', '::') } | ForEach-Object { $_.LocalPort })
-        foreach ($p in $script:IKS.LocalProxyPorts) { if ($listen -contains $p) { return "http://127.0.0.1:$p" } }
-    } catch { }
-    return $null
-}
+# Get-IKSLocalProxy lives in Discovery.ps1 (Windows proxy first, then known ports)
 
 # Direct first (works through TUN), then through the local VPN proxy
 function Get-IKSWebText([string]$Url, [int]$TimeoutSec = 90) {

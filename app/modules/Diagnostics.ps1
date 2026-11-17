@@ -97,51 +97,65 @@ function Measure-IKSTcpMs([string]$To, [int]$Port = 443, [int]$Ms = 2000) {
     return $null
 }
 
-# Real round trip to a server: TCP connect + a HEAD request, timed to the first answer byte.
-# Needed in TUN mode: sing-tun / tun2socks complete the TCP handshake locally (a fake ~10 ms),
-# so only an answer from the far end measures the tunnel.
+# Reads one HTTP answer head (up to the blank line). $true when it is an HTTP answer.
+function Read-IKSHttpHead($Stream) {
+    $buf = New-Object byte[] 1024; $text = ''
+    while ($text -notmatch "`r`n`r`n") {
+        $n = $Stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { break }
+        $text += [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+        if ($text.Length -gt 16384) { break }
+    }
+    return ($text -match '^HTTP/1\.[01] \d{3}')
+}
+
+# Ping inside the tunnel, measured the way VPN clients do: the connection through the tunnel is
+# opened first (warm-up request), then ONE request on that same connection is timed - the pure
+# round trip you -> VPN server -> site -> back, without connection set-up.
+# Falls back to the warm-up time when the site closes the connection after one answer.
+function Measure-IKSWarmRtt($Stream, [string]$HostName) {
+    $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $HostName`r`nConnection: keep-alive`r`n`r`n")
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $Stream.Write($head, 0, $head.Length)
+    if (-not (Read-IKSHttpHead $Stream)) { return $null }
+    $first = [int]$sw.ElapsedMilliseconds
+    try {
+        $sw.Restart()
+        $Stream.Write($head, 0, $head.Length)
+        if (Read-IKSHttpHead $Stream) { return [int]$sw.ElapsedMilliseconds }
+    } catch { }
+    return $first
+}
+
+# TUN mode: sing-tun / tun2socks complete the TCP handshake locally (a fake ~10 ms), so only
+# answers from the far end count.
 function Measure-IKSHttpMs([string]$To, [int]$Port = 80, [int]$Ms = 5000) {
     $c = New-Object Net.Sockets.TcpClient
     try {
-        $sw = [Diagnostics.Stopwatch]::StartNew()
         $ar = $c.BeginConnect($To, $Port, $null, $null)
         if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
         $c.EndConnect($ar)
-        $st = $c.GetStream(); $st.ReadTimeout = [Math]::Max(1, $Ms - [int]$sw.ElapsedMilliseconds)
-        $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $To`r`nConnection: close`r`n`r`n")
-        $st.Write($head, 0, $head.Length)
-        $buf = New-Object byte[] 256
-        $n = $st.Read($buf, 0, $buf.Length)
-        if ($n -gt 0 -and [Text.Encoding]::ASCII.GetString($buf, 0, $n) -match '^HTTP/') { return [int]$sw.ElapsedMilliseconds }
-        return $null
+        $st = $c.GetStream(); $st.ReadTimeout = $Ms
+        return Measure-IKSWarmRtt $st $To
     } catch { return $null }
     finally { $c.Close() }
 }
 
-# Round trip through the VPN's local proxy: CONNECT to a foreign host, then a tiny HEAD request
-# inside the tunnel, timed until its first answer byte. (Many clients - Hiddify/sing-box - answer
-# the CONNECT with 200 at once, before dialling, so the 200 alone measures nothing.)
+# Proxy mode: CONNECT through the VPN's local proxy, then the same warm round trip inside it.
+# (sing-box answers the CONNECT with 200 before dialling, so the 200 itself measures nothing.)
 function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int]$Ms = 5000) {
     if ($Proxy -notmatch '^(?:https?://)?([^:/]+):(\d+)') { return $null }
     $proxyHost = $Matches[1]; $port = [int]$Matches[2]
     $c = New-Object Net.Sockets.TcpClient
     try {
-        $sw = [Diagnostics.Stopwatch]::StartNew()
         $ar = $c.BeginConnect($proxyHost, $port, $null, $null)
         if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
         $c.EndConnect($ar)
-        $st = $c.GetStream(); $st.ReadTimeout = [Math]::Max(1, $Ms - [int]$sw.ElapsedMilliseconds)
+        $st = $c.GetStream(); $st.ReadTimeout = $Ms
         $req = [Text.Encoding]::ASCII.GetBytes("CONNECT $Target HTTP/1.1`r`nHost: $Target`r`n`r`n")
         $st.Write($req, 0, $req.Length)
-        $buf = New-Object byte[] 512
-        $n = $st.Read($buf, 0, $buf.Length)
-        if ($n -le 0 -or [Text.Encoding]::ASCII.GetString($buf, 0, $n) -notmatch '^HTTP/1\.[01] 200') { return $null }
-        $th = $Target.Split(':')[0]
-        $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $th`r`nConnection: close`r`n`r`n")
-        $st.Write($head, 0, $head.Length)
-        $n = $st.Read($buf, 0, $buf.Length)
-        if ($n -gt 0 -and [Text.Encoding]::ASCII.GetString($buf, 0, $n) -match '^HTTP/') { return [int]$sw.ElapsedMilliseconds }
-        return $null
+        if (-not (Read-IKSHttpHead $st)) { return $null }
+        return Measure-IKSWarmRtt $st ($Target.Split(':')[0])
     } catch { return $null }
     finally { $c.Close() }
 }

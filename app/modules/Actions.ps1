@@ -270,6 +270,7 @@ function Get-IKSStatus {
         Version = $script:IKS.Version; Author = $script:IKS.Author; Enabled = [bool]$s.Enabled; Filters = $filters
         Installed = (Test-Path (Join-Path $script:IKS.InstallDir 'IKS.ps1'))
         VpnApps = $apps; VpnMode = $mode; Proxy = $proxy
+        VpnClient = $(if ($mode -ne 'none') { Get-IKSActiveVpnClient $(if ($mode -eq 'proxy') { $proxy } else { '' }) } else { '' })
         SystemProxy = $(if ($mode -eq 'proxy') { $sp = Get-IKSSystemProxy; [bool]($sp.Enabled -or $sp.Pac) } else { $null })
         Tunnel = $(if ($tun) { "$($tun[0].Name) $($tun[0].IPv4 -join ',')" } else { '' })
         IranDirect = [bool]$s.IranDirect; IranRoutes = [int]$s.RoutesCount

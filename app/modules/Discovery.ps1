@@ -297,6 +297,48 @@ function Get-IKSTunnelAdapters {
     return $out
 }
 
+# Which VPN client is REALLY carrying the traffic, from evidence only (never a guess from
+# "running apps"): the process that holds TCP connections to a foreign server over the real
+# network card (the encrypted tunnel to the VPN server), or that owns the local proxy port.
+# The name shown is its top ancestor that is not part of Windows (xray -> v2rayN).
+# '' when nothing proves it (e.g. a UDP-only WireGuard): the GUI then shows no name.
+function Select-IKSVpnClient([int[]]$Pids, $Procs) {
+    foreach ($procId in $Pids) {
+        if (-not $Procs.ContainsKey($procId)) { continue }
+        $p = $Procs[$procId]
+        if (Test-IKSSystemPath $p.Path) { continue }
+        $depth = 0
+        while ($depth -lt 4 -and $p.Parent -and $Procs.ContainsKey([int]$p.Parent)) {
+            $pp = $Procs[[int]$p.Parent]
+            if (-not $pp.Path -or (Test-IKSSystemPath $pp.Path) -or $pp.Name -match '(?i)^explorer') { break }
+            $p = $pp; $depth++
+        }
+        return $p.Name
+    }
+    return ''
+}
+
+function Get-IKSActiveVpnClient([string]$Proxy) {
+    try {
+        $phys = Get-IKSPhysicalInterface
+        $procs = @{}
+        foreach ($w in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+            $procs[[int]$w.ProcessId] = [pscustomobject]@{ Name = [IO.Path]::GetFileNameWithoutExtension("$($w.Name)"); Path = "$($w.ExecutablePath)"; Parent = [int]$w.ParentProcessId }
+        }
+        $pids = @()
+        if ($Proxy -match ':(\d+)$') {
+            $pids += @(Get-NetTCPConnection -State Listen -LocalPort ([int]$Matches[1]) -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.OwningProcess })
+        }
+        if ($phys) {
+            $iran = Read-IKSIranList
+            $pids += @(Get-NetTCPConnection -State Established -LocalAddress $phys.IPv4 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.RemoteAddress -notmatch '^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)' -and -not (Test-IKSInRanges $_.RemoteAddress $iran) } |
+                       Group-Object OwningProcess | Sort-Object Count -Descending | ForEach-Object { [int]$_.Name })
+        }
+        return Select-IKSVpnClient @($pids | Select-Object -Unique) $procs
+    } catch { return '' }
+}
+
 # Real internet interface = best IPv4 default route that is not a tunnel
 function Get-IKSPhysicalInterface {
     $tun = @(Get-IKSTunnelAdapters | ForEach-Object { $_.ifIndex })
@@ -392,11 +434,22 @@ function Sync-IKSProxyBypass([bool]$Enabled) {
     return "set $($want.Count) entries"
 }
 
-# First local proxy port that is listening (proxy-mode VPN clients)
+# Local proxy port of the VPN client in use. The Windows proxy wins when it points to a local
+# port that is listening (several clients may listen at once: Hiddify 12334 + v2rayN 10808);
+# otherwise the first known port that is listening.
+function Get-IKSProxyPort([string]$Server) {
+    # "127.0.0.1:10808" | "http=127.0.0.1:10808;https=..." | "socks=localhost:1080"
+    foreach ($part in "$Server".Split(';')) {
+        if ($part -match '(?i)^(?:[a-z]+=)?(?:https?://)?(127\.0\.0\.1|localhost|\[::1\]):(\d+)$') { return [int]$Matches[2] }
+    }
+    return $null
+}
 function Get-IKSLocalProxy {
     try {
         $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
                     Where-Object { $_.LocalAddress -in @('127.0.0.1', '0.0.0.0', '::') } | ForEach-Object { $_.LocalPort })
+        $sys = Get-IKSSystemProxy
+        if ($sys.Enabled) { $port = Get-IKSProxyPort $sys.Server; if ($port -and $listen -contains $port) { return "http://127.0.0.1:$port" } }
         foreach ($p in $script:IKS.LocalProxyPorts) { if ($listen -contains $p) { return "http://127.0.0.1:$p" } }
     } catch { }
     return $null

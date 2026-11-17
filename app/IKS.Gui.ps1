@@ -537,17 +537,14 @@ function Render-Status($s) {
         Start-Job2 'Invoke-IKSSync -NoScan' { param($o, $e) $script:AutoSyncing = $false; Refresh-Status }
     }
 
-    # one name only: the client the user knows (Hiddify), not its helpers (HiddifyAdmin, CoreEngine, cli, service...)
-    $client = @($s.VpnApps | Where-Object Running | ForEach-Object { ($_.Name -replace '\s*\(via [^)]*\)', '').Trim() } |
-                Where-Object { $_ -and $_ -notmatch '(?i)service|svc|cli$|core|engine|admin|helper|tun2socks|^hd-|^bstk' } | Select-Object -First 1)
-    $client = if ($client) { $client[0] } else { 'VPN' }
-    $dot = " $([char]0x00B7) "
+    # the client name only when it is proven (it carries the tunnel / owns the proxy port); else just the mode
+    $name = $(if ($s.VpnClient) { "$($s.VpnClient) $([char]0x00B7) " } else { '' })
     switch ($s.VpnMode) {
-        'tun'   { $ui.ValVpn.Text = "$client${dot}TUN"; $ui.ValVpn.ToolTip = "TUN mode: $($s.Tunnel)"; Set-Dot $ui.DotVpn $T.Green }
+        'tun'   { $ui.ValVpn.Text = "${name}TUN"; $ui.ValVpn.ToolTip = "TUN mode: $($s.Tunnel)"; Set-Dot $ui.DotVpn $T.Green }
         'proxy' {
             $ui.ValVpn.ToolTip = "Proxy mode: $($s.Proxy -replace 'http://', '')"
-            if ($s.SystemProxy -eq $false) { $ui.ValVpn.Text = "$client${dot}Proxy (Windows proxy off)"; Set-Dot $ui.DotVpn $T.Amber }   # browsers go direct -> blocked
-            else { $ui.ValVpn.Text = "$client${dot}Proxy"; Set-Dot $ui.DotVpn $T.Green }
+            if ($s.SystemProxy -eq $false) { $ui.ValVpn.Text = "${name}Proxy (Windows proxy off)"; Set-Dot $ui.DotVpn $T.Amber }   # browsers go direct -> blocked
+            else { $ui.ValVpn.Text = "${name}Proxy"; Set-Dot $ui.DotVpn $T.Green }
         }
         default { $ui.ValVpn.Text = 'Not connected'; $ui.ValVpn.ToolTip = $null; Set-Dot $ui.DotVpn $T.Off }
     }
@@ -834,7 +831,7 @@ if ($SelfTest) {
     $win.Left = -20000; $win.ShowInTaskbar = $false
     $win.add_ContentRendered({
         try {
-            Render-Status ([pscustomobject]@{ Version = $script:IKS.Version; Enabled = $true; Healthy = $true; RevertPending = $false; Problems = @(); VpnMode = 'tun'
+            Render-Status ([pscustomobject]@{ Version = $script:IKS.Version; Enabled = $true; Healthy = $true; RevertPending = $false; Problems = @(); VpnMode = 'tun'; VpnClient = 'v2rayN'
                 VpnApps = @([pscustomobject]@{ Name = 'Hiddify'; Path = 'c:\program files\hiddify\hiddify.exe'; Source = 'auto'; Exists = $true; Running = $true },
                             [pscustomobject]@{ Name = 'HD-Player'; Path = 'c:\program files\bluestacks_nxt\hd-player.exe'; Source = 'auto'; Exists = $true; Running = $false })
                 Author = 'Mansoor'; IranDirect = $true; IranRoutes = 1747; Tunnel = 'tun0 172.19.0.1'; Proxy = ''; IranRanges = 1602

@@ -216,6 +216,25 @@ $hh = $hs.BeginInvoke()
 try { $hm = Measure-IKSHttpMs '127.0.0.1' $hport 3000; Check "TUN ping waits for the far end's answer, not the handshake ($hm ms)" { $null -ne $hm -and $hm -ge 100 } }
 finally { $null = $hh.AsyncWaitHandle.WaitOne(3000); $hs.Dispose(); $hl.Stop() }
 Check 'TCP handshake time on loopback' { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); try { $m = Measure-IKSTcpMs '127.0.0.1' $l.LocalEndpoint.Port; $null -ne $m -and $m -lt 1000 } finally { $l.Stop() } }
+# keep-alive server: first answer slow (connection set-up through a tunnel), second fast
+$kl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $kl.Start(); $kport = $kl.LocalEndpoint.Port
+$ks = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 512
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n")
+    $null = $s.Read($b, 0, 512); Start-Sleep -Milliseconds 400; $s.Write($r, 0, $r.Length)
+    $null = $s.Read($b, 0, 512); Start-Sleep -Milliseconds 30; $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 200; $c.Close() }).AddArgument($kl)
+$kh = $ks.BeginInvoke()
+try { $km = Measure-IKSHttpMs '127.0.0.1' $kport 3000; Check "ping = round trip on an open connection, not set-up ($km ms, set-up was 400)" { $null -ne $km -and $km -ge 25 -and $km -lt 300 } }
+finally { $null = $kh.AsyncWaitHandle.WaitOne(3000); $ks.Dispose(); $kl.Stop() }
+
+Say "`n[which VPN client is really in use]"
+$tree = @{ 10 = [pscustomobject]@{ Name = 'xray'; Path = 'c:\app\v2rayn\bin\xray\xray.exe'; Parent = 20 }
+           20 = [pscustomobject]@{ Name = 'v2rayN'; Path = 'c:\app\v2rayn\v2rayn.exe'; Parent = 30 }
+           30 = [pscustomobject]@{ Name = 'explorer'; Path = "$env:SystemRoot\explorer.exe"; Parent = 4 }
+           40 = [pscustomobject]@{ Name = 'svchost'; Path = "$env:SystemRoot\System32\svchost.exe"; Parent = 4 } }
+Check 'the core holding the tunnel connection is named after its app (xray -> v2rayN)' { (Select-IKSVpnClient @(10) $tree) -eq 'v2rayN' }
+Check 'Windows processes are skipped; no evidence -> no name' { (Select-IKSVpnClient @(40, 10) $tree) -eq 'v2rayN' -and (Select-IKSVpnClient @(40) $tree) -eq '' -and (Select-IKSVpnClient @() $tree) -eq '' }
+Check 'Windows proxy setting parsed (plain, per-protocol, socks)' { (Get-IKSProxyPort '127.0.0.1:10808') -eq 10808 -and (Get-IKSProxyPort 'http=127.0.0.1:12334;https=127.0.0.1:12334') -eq 12334 -and (Get-IKSProxyPort 'socks=localhost:1080') -eq 1080 -and $null -eq (Get-IKSProxyPort 'proxy.corp.com:8080') }
 Check 'ping colours: good / ok / slow / down' { (Get-IKSPingLevel 42) -eq 'good' -and (Get-IKSPingLevel 800) -eq 'ok' -and (Get-IKSPingLevel 1057) -eq 'slow' -and (Get-IKSPingLevel $null) -eq 'down' }
 Check 'no VPN -> no VPN ping; formatting' { $r = Get-IKSLatency 'none' '' '127.0.0.1'; $null -eq $r.Vpn -and (Format-IKSMs $null) -eq 'timeout' -and (Format-IKSMs 42) -eq '42 ms' }
 
