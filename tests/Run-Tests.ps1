@@ -158,6 +158,14 @@ Check 'old MAPPED-ADDRESS used as a fallback' { (Get-IKSStunMappedIp $plain) -eq
 Check 'short or empty answer -> no address' { (Get-IKSStunMappedIp ([byte[]](1, 1, 0))) -eq '' -and (Get-IKSStunMappedIp $null) -eq '' }
 Check 'STUN request is a 20-byte Binding Request with the magic cookie' { $q = New-IKSStunRequest; $q.Length -eq 20 -and $q[0] -eq 0 -and $q[1] -eq 1 -and $q[4] -eq 0x21 -and $q[7] -eq 0x42 }
 
+Say "`n[tunnel addresses (UDP through wintun / sing-tun)]"
+function Get-IKSTunnelAdapters { @([pscustomobject]@{ Name = 'tun0'; IfType = 53; IsTap = $false; IPv4 = @('172.19.0.1') }, [pscustomobject]@{ Name = 'tap'; IfType = 6; IsTap = $true; IPv4 = @('10.8.0.6', '192.168.1.50') }) }
+function Get-IKSPhysicalInterface { [pscustomobject]@{ ifIndex = 1; Alias = 'Wi-Fi'; IPv4 = '192.168.1.50'; Gateway = '192.168.1.1' } }
+$lt = @{ LearnedTunnels = @() }; Update-IKSLearnedTunnels $lt
+Check 'sing-tun / wintun address is learned (not only TAP)' { @($lt.LearnedTunnels.Ip) -contains '172.19.0.1' -and @($lt.LearnedTunnels.Ip) -contains '10.8.0.6' }
+Check 'the real network card address is never exempted' { @($lt.LearnedTunnels.Ip) -notcontains '192.168.1.50' }
+Remove-Item Function:\Get-IKSTunnelAdapters, Function:\Get-IKSPhysicalInterface; . (Join-Path $root 'modules\Discovery.ps1')
+
 Say "`n[VPN tools started by a script or shortcut]"
 $sd = Join-Path ([IO.Path]::GetTempPath()) "iks-script-$PID"; New-Item -ItemType Directory -Force (Join-Path $sd 'bin') | Out-Null
 try {

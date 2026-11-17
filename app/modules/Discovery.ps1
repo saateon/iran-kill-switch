@@ -311,13 +311,15 @@ function Get-IKSPhysicalInterface {
     return $null
 }
 
-# TAP adapters look like Ethernet, so their addresses are remembered and exempted by address
+# Tunnel addresses are remembered and exempted by LOCAL address too: TAP adapters look like
+# Ethernet, and for wintun/sing-tun the interface-type rule alone misses unconnected UDP
+# sockets (DNS, WebRTC/STUN), which WFP classifies before the interface is known.
 function Update-IKSLearnedTunnels($Settings) {
     $now = (Get-Date).ToString('s')
     $map = @{}
     foreach ($t in $Settings.LearnedTunnels) { if ((Get-IKSAgeDays $t.LastSeen) -le $script:IKS.TunnelKeepDays) { $map[$t.Ip] = $t.LastSeen } }
     $phys = Get-IKSPhysicalInterface
-    foreach ($a in @(Get-IKSTunnelAdapters | Where-Object { $_.IsTap })) {
+    foreach ($a in @(Get-IKSTunnelAdapters)) {
         foreach ($ip in $a.IPv4) { if (-not $phys -or $ip -ne $phys.IPv4) { $map[$ip] = $now } }   # never exempt the real NIC
     }
     $Settings.LearnedTunnels = @($map.Keys | Sort-Object | ForEach-Object { [pscustomobject]@{ Ip = $_; LastSeen = $map[$_] } })
