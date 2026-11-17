@@ -10,6 +10,7 @@ If the VPN drops, foreign traffic is blocked, never leaked.
 
 [![Download](https://img.shields.io/github/v/release/saateon/iran-kill-switch?label=Download&style=for-the-badge&color=34D399)](https://github.com/saateon/iran-kill-switch/releases/latest)
 
+[![Tests](https://github.com/saateon/iran-kill-switch/actions/workflows/tests.yml/badge.svg)](https://github.com/saateon/iran-kill-switch/actions/workflows/tests.yml)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows)
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-5391FE?logo=powershell&logoColor=white)
 ![C#](https://img.shields.io/badge/C%23-.NET%20Framework-512BD4?logo=dotnet)
@@ -33,25 +34,29 @@ Iranian sites fast and direct.
 
 - **Works with any VPN, without touching its settings**: Hiddify, v2rayN, Clash, sing-box,
   AmneziaVPN, AmneziaWG, WireGuard, OpenVPN, SSH tunnels (MobaXterm), BlueStacks and more.
-  VPN programs are detected automatically; helpers they start are allowed too.
+  VPN programs are detected automatically; helpers they start are allowed while they run.
+  Tools started by a `.bat`, `.cmd`, `.ps1` or shortcut can be added too: the programs they start are allowed,
+  and a pure-PowerShell tool gets its own private PowerShell copy. Windows' own programs are never allowed.
 - **Real kill switch**: native Windows Filtering Platform filters, active from boot,
   before any VPN starts. Block rules win over every Windows Firewall allow rule.
 - **Iran direct**: about 1,600 Iranian IPv4 ranges (RIPE NCC + ipdeny, auto-updated) stay
   outside the VPN. For TUN-mode VPNs the tool adds direct routes, so no VPN config is needed.
 - **Direct sites**: your own list of foreign sites (domain, IP, CIDR or URL) that skip the VPN.
   Works in TUN mode (routes) and in System Proxy mode (Windows "no proxy" list, re-applied if the VPN app removes it).
-- **No leaks**: DNS, WebRTC (STUN) and IPv6 are covered. Built-in leak test.
-- **Safe by design**: every change is applied in one transaction; turning on auto-undoes
-  itself in 2 minutes unless you confirm; Emergency OFF and full uninstall restore everything.
+- **No leaks**: DNS, WebRTC (STUN) and IPv6 are covered, also through wintun / sing-tun tunnels. Built-in leak test.
+- **Live ping**: two cards show the round trip inside the VPN tunnel and straight to Iran, measured the way VPN clients do.
+- **Honest status**: the VPN row names the client that really carries the traffic (found from its connections), or no name at all.
+- **Safe by design**: every change is applied in one transaction; after turning on, a self-test runs and
+  protection is kept only if it passes (otherwise you are asked, and it undoes itself in 2 minutes); Emergency OFF and full uninstall restore everything.
   Windows Firewall settings are never changed.
 - **Self-managing**: a background guard repairs filters, refreshes the Iran list and finds
   new VPN programs.
 - **Update check**: the footer shows when a newer release is on GitHub.
-- **Zero dependencies**: only what ships with Windows 10/11. One 80 KB installer.
+- **Zero dependencies**: only what ships with Windows 10/11. One ~90 KB installer.
 
 ## Screenshots
 
-| Main window | VPN apps | Leak test |
+| Main window | Allowed apps | Leak test |
 |:---:|:---:|:---:|
 | <img src="docs/images/main.png" width="260"> | <img src="docs/images/apps.png" width="260"> | <img src="docs/images/tests.png" width="260"> |
 
@@ -71,11 +76,11 @@ the Windows admin prompt. Run a newer setup to update; your settings are kept.
 ## Quick start
 
 1. Open **Iran Kill Switch** from the desktop or Start menu.
-2. Click the **big ring** to turn protection on. A short leak test runs.
-3. Press **Keep protection**. (Without it, everything is undone after 2 minutes.)
+2. Click the **big ring** to turn protection on. A short self-test runs.
+3. All checks pass: protection stays on. Something failed: you choose **Keep** or **Undo** (no answer = undone after 2 minutes).
 
 If your VPN cannot connect: open it, press **Refresh**, or add its program under
-**VPN apps -> Manage -> Add app**.
+**Allowed apps -> Manage -> Add app** (an `.exe`, or the `.bat` / `.ps1` / shortcut that starts it).
 
 ## Documentation
 
@@ -86,6 +91,7 @@ If your VPN cannot connect: open it, press **Refresh**, or add its program under
 | [How it works](docs/how-it-works.md) | WFP filter model, routes, guard, safety net |
 | [Build from source](docs/build.md) | project layout, tests, versioning, making the installer |
 | [FAQ and limits](docs/faq.md) | what is covered, what is not |
+| [Changelog](CHANGELOG.md) | what changed in each version |
 | [Agent brief](AGENTS.md) | compact technical summary for AI coding assistants |
 
 ## License

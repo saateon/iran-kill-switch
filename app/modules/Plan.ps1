@@ -43,7 +43,7 @@ function Get-IKSFilterSpec($Plan) {
         if ($isV6) {
             $spec.Add(@{ Layer = $layer; Name = 'IKS allow IPv6 LAN'; Permit = $true; Weight = 12; Kind = 'v6'; Prefixes = $script:IKS.SpecialV6 })
         } else {
-            if ($Plan.Tunnels.Count) { $spec.Add(@{ Layer = $layer; Name = 'IKS allow TAP tunnel addresses'; Permit = $true; Weight = 13; Kind = 'local'; Ranges = $Plan.Tunnels }) }
+            if ($Plan.Tunnels.Count) { $spec.Add(@{ Layer = $layer; Name = 'IKS allow tunnel addresses'; Permit = $true; Weight = 13; Kind = 'local'; Ranges = $Plan.Tunnels }) }
             for ($i = 0; $i -lt $Plan.Allowed.Count; $i += $script:IKS.ChunkSize) {
                 $chunk = $Plan.Allowed.GetRange($i, [Math]::Min($script:IKS.ChunkSize, $Plan.Allowed.Count - $i))
                 $spec.Add(@{ Layer = $layer; Name = "IKS allow Iran + LAN ($([int]($i / $script:IKS.ChunkSize) + 1))"; Permit = $true; Weight = 12; Kind = 'remote'; Ranges = $chunk })

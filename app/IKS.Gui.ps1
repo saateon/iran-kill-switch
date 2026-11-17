@@ -233,7 +233,9 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
           </Ellipse>
           <Ellipse x:Name="RingFace" Fill="$($T.Surface)" Margin="18"/>
           <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
-            <TextBlock x:Name="RingIcon" FontFamily="Segoe MDL2 Assets" Text="&#xE7E8;" FontSize="20" HorizontalAlignment="Center" Foreground="$($T.Off)"/>
+            <!-- drawn power symbol: geometric centre, so it lines up exactly with the text (font glyphs carry side bearings) -->
+            <Path x:Name="RingIcon" Width="20" Height="20" HorizontalAlignment="Center" Stroke="$($T.Off)" StrokeThickness="2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M 6.1,5.2 A 6.9,6.9 0 1 0 13.9,5.2 M 10,2.2 L 10,9.6"/>
             <TextBlock x:Name="RingText" Text="..." FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,1,0,0" Foreground="$($T.Text)"/>
             <TextBlock x:Name="RingHint" Text="" FontSize="9.5" Foreground="$($T.Muted)" HorizontalAlignment="Center"/>
           </StackPanel>
@@ -243,8 +245,38 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
       <TextBlock x:Name="Headline" Text="Checking..." FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0"/>
       <TextBlock x:Name="Sub" Text="" FontSize="12.5" Foreground="$($T.Muted)" TextAlignment="Center" TextWrapping="Wrap" Margin="10,4,10,0"/>
 
+      <!-- live ping: inside the VPN tunnel | direct (Iran). Same surface, radius and type scale as the facts card -->
+      <UniformGrid Columns="2" Margin="0,14,0,0">
+        <Border Background="$($T.Surface)" CornerRadius="12" Padding="14,9" Margin="0,0,5,0" ToolTip="Ping inside the VPN tunnel: a real round trip to a foreign server through your VPN.">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="VPN PING" FontSize="10" FontWeight="SemiBold" Foreground="$($T.Muted)"/>
+              <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                <TextBlock x:Name="PingVpn" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock x:Name="PingVpnUnit" Text="" FontSize="11" Foreground="$($T.Muted)" VerticalAlignment="Bottom" Margin="4,0,0,3"/>
+              </StackPanel>
+            </StackPanel>
+            <Ellipse x:Name="PingVpnDot" Grid.Column="1" Width="7" Height="7" Fill="$($T.Off)" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
+        <Border Background="$($T.Surface)" CornerRadius="12" Padding="14,9" Margin="5,0,0,0" ToolTip="Ping straight through your normal internet to an Iranian site (not through the VPN).">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="DIRECT PING" FontSize="10" FontWeight="SemiBold" Foreground="$($T.Muted)"/>
+              <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                <TextBlock x:Name="PingDirect" Text="--" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock x:Name="PingDirectUnit" Text="" FontSize="11" Foreground="$($T.Muted)" VerticalAlignment="Bottom" Margin="4,0,0,3"/>
+              </StackPanel>
+            </StackPanel>
+            <Ellipse x:Name="PingDirectDot" Grid.Column="1" Width="7" Height="7" Fill="$($T.Off)" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
+      </UniformGrid>
+
       <!-- facts -->
-      <Border Background="$($T.Surface)" CornerRadius="12" Padding="16,12" Margin="0,14,0,0">
+      <Border Background="$($T.Surface)" CornerRadius="12" Padding="16,12" Margin="0,10,0,0">
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="28"/><RowDefinition Height="28"/><RowDefinition Height="28"/><RowDefinition Height="28"/><RowDefinition Height="28"/></Grid.RowDefinitions>
@@ -254,7 +286,7 @@ $T = @{ Bg = '#0E1014'; Surface = '#161A21'; Surface2 = '#1C212A'; Line = '#262C
           <Ellipse x:Name="DotList"  Grid.Row="3" Width="7" Height="7" Fill="$($T.Off)" Margin="0,0,10,0"/>
           <Ellipse x:Name="DotGuard" Grid.Row="4" Width="7" Height="7" Fill="$($T.Off)" Margin="0,0,10,0"/>
           <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource Key}" Text="VPN" VerticalAlignment="Center"/>
-          <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource Key}" Text="VPN apps" VerticalAlignment="Center"/>
+          <TextBlock Grid.Row="1" Grid.Column="1" Style="{StaticResource Key}" Text="Allowed apps" VerticalAlignment="Center"/>
           <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource Key}" Text="Iran direct (TUN)" VerticalAlignment="Center"/>
           <TextBlock Grid.Row="3" Grid.Column="1" Style="{StaticResource Key}" Text="Iran IP list" VerticalAlignment="Center"/>
           <TextBlock Grid.Row="4" Grid.Column="1" Style="{StaticResource Key}" Text="Background guard" VerticalAlignment="Center"/>
@@ -486,11 +518,13 @@ function Render-Status($s) {
     if ($s.Enabled -and $s.RevertPending) { $c = $T.Amber; $ring = 'ON'; $hint = 'NOT CONFIRMED'; $h = 'Waiting for your confirmation'; $sub = 'Protection will be undone automatically unless you confirm it works.' }
     elseif ($s.Enabled -and $s.Healthy) {
         $c = $T.Green; $ring = 'ON'; $hint = 'PROTECTED'; $h = 'You are protected'
-        $sub = if ($s.VpnMode -eq 'none') { 'VPN is off: foreign sites are blocked, Iranian sites work normally.' } else { 'Foreign traffic only through the VPN. Iranian sites go direct.' }
+        $sub = if ($s.VpnMode -eq 'none') { 'VPN is off: foreign sites are blocked, Iranian sites work normally.' }
+               elseif ($s.VpnMode -eq 'proxy') { 'Proxy mode: WebRTC/UDP is blocked (shows n/a). Use TUN / VPN mode in your VPN app to cover it too.' }
+               else { 'Foreign traffic only through the VPN. Iranian sites go direct.' }
     } elseif ($s.Enabled) { $c = $T.Amber; $ring = 'ON'; $hint = 'ATTENTION'; $h = 'Needs attention'; $sub = $s.Problems[0] }
     else { $c = $T.Off; $ring = 'OFF'; $hint = 'CLICK TO TURN ON'; $h = 'Kill switch is off'; $sub = 'If the VPN drops, foreign traffic leaves with your real IP.' }
     if (-not $s.Enabled -and $s.Problems) { $sub = $s.Problems[0] }
-    $ui.RingArc.Stroke = Brush $c; $ui.RingGlow.Stroke = Brush $c; $ui.RingIcon.Foreground = Brush $c
+    $ui.RingArc.Stroke = Brush $c; $ui.RingGlow.Stroke = Brush $c; $ui.RingIcon.Stroke = Brush $c
     $ui.RingText.Text = $ring; $ui.Headline.Text = $h; $ui.Sub.Text = $sub
     $script:RingHintIdle = $hint
     $ui.RingHint.Text = $(if ($ui.RingBtn.IsMouseOver) { Get-RingHoverHint $s.Enabled } else { $hint })
@@ -503,14 +537,16 @@ function Render-Status($s) {
         Start-Job2 'Invoke-IKSSync -NoScan' { param($o, $e) $script:AutoSyncing = $false; Refresh-Status }
     }
 
-    $clients = (@($s.VpnApps | Where-Object Running | ForEach-Object { $_.Name } | Where-Object { $_ -notmatch '(?i)service|svc|cli$' }) | Select-Object -Unique -First 2) -join ', '
+    # the client name only when it is proven (it carries the tunnel / owns the proxy port); else just the mode
+    $name = $(if ($s.VpnClient) { "$($s.VpnClient) $([char]0x00B7) " } else { '' })
     switch ($s.VpnMode) {
-        'tun'   { $ui.ValVpn.Text = "$clients - TUN $($s.Tunnel)".Trim(' -'); Set-Dot $ui.DotVpn $T.Green }
+        'tun'   { $ui.ValVpn.Text = "${name}TUN"; $ui.ValVpn.ToolTip = "TUN mode: $($s.Tunnel)"; Set-Dot $ui.DotVpn $T.Green }
         'proxy' {
-            if ($s.SystemProxy -eq $false) { $ui.ValVpn.Text = "$clients - proxy, Windows proxy OFF"; Set-Dot $ui.DotVpn $T.Amber }   # browsers go direct -> blocked
-            else { $ui.ValVpn.Text = "$clients - proxy $($s.Proxy -replace 'http://', '')"; Set-Dot $ui.DotVpn $T.Green }
+            $ui.ValVpn.ToolTip = "Proxy mode: $($s.Proxy -replace 'http://', '')"
+            if ($s.SystemProxy -eq $false) { $ui.ValVpn.Text = "${name}Proxy (Windows proxy off)"; Set-Dot $ui.DotVpn $T.Amber }   # browsers go direct -> blocked
+            else { $ui.ValVpn.Text = "${name}Proxy"; Set-Dot $ui.DotVpn $T.Green }
         }
-        default { $ui.ValVpn.Text = $(if ($clients) { "$clients - not connected" } else { 'Not connected' }); Set-Dot $ui.DotVpn $T.Off }
+        default { $ui.ValVpn.Text = 'Not connected'; $ui.ValVpn.ToolTip = $null; Set-Dot $ui.DotVpn $T.Off }
     }
     $apps = @($s.VpnApps | Where-Object Exists)
     $ui.ValApps.Text = $(if ($apps) { "$($apps.Count) allowed" } else { 'none found' })
@@ -519,11 +555,51 @@ function Render-Status($s) {
     $ui.ValIran.Text = $(if (-not $s.IranDirect) { 'off' } elseif ($s.Enabled -and $s.IranRoutes) { "$($s.IranRoutes) routes" } elseif ($s.Enabled) { 'no network' } else { 'on with protection' }) +
                        $(if ($s.DirectSites) { " + $($s.DirectSites) direct site$(if ($s.DirectSites -gt 1) { 's' })" } else { '' })
     Set-Dot $ui.DotIran $(if ($s.IranDirect -and $s.Enabled -and $s.IranRoutes) { $T.Green } else { $T.Off })
+    Show-Ping
     $ui.ValList.Text = '{0:N0} ranges - {1}' -f $s.IranRanges, $(if ($s.ListUpdated) { $s.ListUpdated.Substring(0, [Math]::Min(10, $s.ListUpdated.Length)) } else { 'unknown' })
     Set-Dot $ui.DotList $(if ($s.IranRanges -gt 300) { $T.Green } else { $T.Red })
     $ui.ValGuard.Text = $(if ($s.GuardInstalled) { if ($s.GuardLastRun) { "Active - checked $($s.GuardLastRun.Substring(11))" } else { 'Active' } } else { 'Not installed' })
     Set-Dot $ui.DotGuard $(if ($s.GuardInstalled) { $T.Green } else { $T.Red })
 }
+
+# ---- live ping: VPN path + Iran path, every 3 s while the window is visible -------------
+$script:Ping = $null; $script:Pinging = $false; $script:PingIranIp = ''
+function Set-PingCard($Val, $Unit, $Dot, $Ms, [string]$State) {
+    # State: live | idle (not connected) | wait (first measurement running)
+    if ($State -ne 'live') {
+        $Val.Text = $(if ($State -eq 'idle') { 'off' } else { '...' }); $Unit.Text = ''
+        $Val.Foreground = Brush $T.Muted; $Dot.Fill = Brush $T.Off; return
+    }
+    $lvl = Get-IKSPingLevel $Ms
+    if ($lvl -eq 'down') { $Val.Text = 'timeout'; $Unit.Text = '' } else { $Val.Text = "$Ms"; $Unit.Text = 'ms' }
+    $Val.Foreground = Brush $(if ($lvl -eq 'down') { $T.Red } else { $T.Text })
+    $Dot.Fill = Brush $(switch ($lvl) { 'good' { $T.Green } 'ok' { $T.Amber } default { $T.Red } })
+}
+function Show-Ping {
+    $st = $script:Status; $p = $script:Ping
+    $vpnOn = $st -and $st.VpnMode -ne 'none'
+    $vpnState = if (-not $vpnOn) { 'idle' } elseif ($p -and $p.Mode -eq $st.VpnMode) { 'live' } else { 'wait' }
+    Set-PingCard $ui.PingVpn $ui.PingVpnUnit $ui.PingVpnDot $(if ($p) { $p.Vpn }) $vpnState
+    $dirState = if ($p -and $p.IranIp) { 'live' } elseif ($p) { 'idle' } else { 'wait' }
+    Set-PingCard $ui.PingDirect $ui.PingDirectUnit $ui.PingDirectDot $(if ($p) { $p.Iran }) $dirState
+}
+$pingTimer = New-Object Windows.Threading.DispatcherTimer
+$pingTimer.Interval = [TimeSpan]::FromSeconds(3)
+$pingTimer.add_Tick({
+    if ($script:Pinging -or -not $script:Status -or -not $win.IsVisible -or $win.WindowState -eq 'Minimized') { return }
+    $script:Pinging = $true
+    $code = "Get-IKSLatency '{0}' '{1}' '{2}'" -f $script:Status.VpnMode, "$($script:Status.Proxy)".Replace("'", "''"), $script:PingIranIp
+    Start-Job2 $code {
+        param($o, $e)
+        $script:Pinging = $false
+        if ($e -or -not $o) { return }
+        $script:Ping = $o[0]
+        if ($script:Ping.IranIp) { $script:PingIranIp = $script:Ping.IranIp }
+        if ($null -eq $script:Ping.Iran) { $script:PingIranIp = '' }      # re-resolve next time (site moved?)
+        Show-Ping
+    }
+})
+if (-not $SelfTest) { $pingTimer.Start() }
 
 # Refresh-Status { callback }: callback runs after the NEW status is on screen
 $script:StatusBusy = $false; $script:StatusAgain = $false; $script:StatusThen = @()
@@ -578,6 +654,12 @@ function Start-Enable {
             param($o2, $e2)
             Refresh-Status
             $sum = if ($e2) { $ui.OvList.Children.Clear(); @{ Fail = 1; Pass = 0; Total = 0 } } else { Fill-Tests $o2 }
+            # all checks passed and Iran is reachable: keep it without a question (the dialog is only for problems)
+            if (-not $e2 -and (Test-IKSAutoKeep $o2)) {
+                Show-Busy "All $($sum.Pass) checks passed - protection is ON"
+                Start-Job2 'Confirm-IKSKeep -Auto' { param($o3, $e3) if ($e3) { Fail-Dialog 'Could not confirm' $e3 } else { Refresh-Status { Hide-Overlay } } }
+                return
+            }
             $script:TestBody = if ($sum.Fail) { "$($sum.Fail) check(s) failed. If Iranian sites do not open, press Undo." }
                                else { "All $($sum.Pass) checks passed. Open an Iranian site and a foreign site to be sure." }
             # The checks may have used most of the 2 minutes: give the user a full window again
@@ -702,18 +784,26 @@ function Show-Apps {
         $rm.add_Click({
             param($sender, $e)
             $path = $sender.Tag
-            Show-Busy 'Removing VPN app...'
+            Show-Busy 'Removing app...'
             Start-Job2 ("Remove-IKSVpnApp '{0}'" -f $path.Replace("'", "''")) { param($o, $e) if ($e) { Fail-Dialog 'Could not remove' $e } else { Refresh-Status { Show-Apps } } }
         })
         $null = $g.Children.Add($sp); $null = $g.Children.Add($rm)
         $null = $ui.OvList.Children.Add($g)
     }
-    Show-Dialog 'VPN apps allowed through the kill switch' 'These programs may connect anywhere; everything else reaches foreign sites only through the tunnel. If your VPN cannot connect: open it, press Refresh, or add its program with Add app.' 'Add app...' {
+    Show-Dialog 'Allowed apps' 'VPN clients and tools that may connect outside the tunnel. Everything else reaches foreign sites only through the VPN. Add a program, or the .bat / .ps1 / shortcut that starts it.' 'Add app...' {
         $dlg = New-Object Microsoft.Win32.OpenFileDialog
-        $dlg.Title = 'Choose the VPN program (.exe)'; $dlg.Filter = 'Programs (*.exe)|*.exe'
+        $dlg.Title = 'Choose a program, or the script / shortcut that starts it'
+        $dlg.Filter = 'Programs, scripts and shortcuts (*.exe;*.bat;*.cmd;*.ps1;*.lnk)|*.exe;*.bat;*.cmd;*.ps1;*.lnk|Programs (*.exe)|*.exe'
+        $dlg.DereferenceLinks = $false       # a .lnk is resolved by the app, also when it points to a script
         if ($dlg.ShowDialog($win)) {
-            Show-Busy 'Adding VPN app...'
-            Start-Job2 ("Add-IKSVpnApp '{0}'" -f $dlg.FileName.Replace("'", "''")) { param($o, $e) if ($e) { Fail-Dialog 'Could not add' $e } else { Refresh-Status { Show-Apps } } }
+            Show-Busy 'Adding app...'
+            Start-Job2 ("Add-IKSVpnApp '{0}'" -f $dlg.FileName.Replace("'", "''")) {
+                param($o, $e)
+                if ($e) { Fail-Dialog 'Could not add' $e; return }
+                $msg = "$(@($o)[-1])"
+                if ($msg -match 'shortcut') { Refresh-Status { Show-Dialog 'Added' $msg 'OK' { Show-Apps } $null $null } }
+                else { Refresh-Status { Show-Apps } }
+            }
         } else { Show-Apps }
     } 'Close' $null
     $ui.OvListScroll.Visibility = 'Visible'
@@ -741,11 +831,14 @@ if ($SelfTest) {
     $win.Left = -20000; $win.ShowInTaskbar = $false
     $win.add_ContentRendered({
         try {
-            Render-Status ([pscustomobject]@{ Version = $script:IKS.Version; Enabled = $true; Healthy = $true; RevertPending = $false; Problems = @(); VpnMode = 'tun'
+            Render-Status ([pscustomobject]@{ Version = $script:IKS.Version; Enabled = $true; Healthy = $true; RevertPending = $false; Problems = @(); VpnMode = 'tun'; VpnClient = 'v2rayN'
                 VpnApps = @([pscustomobject]@{ Name = 'Hiddify'; Path = 'c:\program files\hiddify\hiddify.exe'; Source = 'auto'; Exists = $true; Running = $true },
                             [pscustomobject]@{ Name = 'HD-Player'; Path = 'c:\program files\bluestacks_nxt\hd-player.exe'; Source = 'auto'; Exists = $true; Running = $false })
                 Author = 'Mansoor'; IranDirect = $true; IranRoutes = 1747; Tunnel = 'tun0 172.19.0.1'; Proxy = ''; IranRanges = 1602
                 ListUpdated = '2026-11-12 09:43'; GuardInstalled = $true; GuardLastRun = '2026-11-12 10:05' })
+            # IKS_GUI_SELFTEST_PING=1 measures for real through the current tunnel (same call as the live timer)
+            $script:Ping = if ($env:IKS_GUI_SELFTEST_PING -eq '1') { Get-IKSLatency 'tun' '' '' } else { [pscustomobject]@{ Vpn = 842; Iran = 48; IranIp = '185.147.179.11'; Mode = 'tun' } }
+            Show-Ping
             # IKS_GUI_SELFTEST_VIEW: main (default) | apps | tests
             switch ($env:IKS_GUI_SELFTEST_VIEW) {
                 'apps' {
@@ -764,6 +857,7 @@ if ($SelfTest) {
                         [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS'; Detail = 'www.aparat.com reached directly via Wi-Fi' },
                         [pscustomobject]@{ Test = 'DNS leak'; Result = 'PASS'; Detail = 'foreign DNS 8.8.8.8 outside VPN: no answer' },
                         [pscustomobject]@{ Test = 'WebRTC leak'; Result = 'PASS'; Detail = 'STUN outside VPN: no answer' },
+                        [pscustomobject]@{ Test = 'WebRTC shows the VPN IP'; Result = 'PASS'; Detail = 'WebRTC shows 203.0.113.10 (through the tunnel)' },
                         [pscustomobject]@{ Test = 'IPv6 leak'; Result = 'PASS'; Detail = 'no public IPv6 on the real adapter' },
                         [pscustomobject]@{ Test = 'Iranian sites bypass the VPN (TUN)'; Result = 'PASS'; Detail = 'www.aparat.com goes out via Wi-Fi, not the tunnel' },
                         [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'PASS'; Detail = 'Foreign sites see 203.0.113.10 (tun mode)' })
@@ -831,5 +925,5 @@ $script:App.add_DispatcherUnhandledException({
     try { Show-Dialog 'Something went wrong' $msg 'OK' $null $null $null } catch { }
 })
 $null = $script:App.Run($win)
-$timer.Stop(); $poll.Stop(); $bypass.Stop()
+$timer.Stop(); $poll.Stop(); $bypass.Stop(); $pingTimer.Stop()
 if (-not $SelfTest) { $script:Single.ReleaseMutex() }

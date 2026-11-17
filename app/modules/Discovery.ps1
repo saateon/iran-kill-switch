@@ -78,12 +78,64 @@ function Find-IKSVendorSiblings([string[]]$AllowedPaths) {
     return $found
 }
 
+# Windows' own programs (powershell, cmd, curl...) are shared by every script on the PC:
+# allowing one would let ANY script bypass the kill switch with the real IP.
+function Test-IKSSystemPath([string]$Path) {
+    if (-not $Path) { return $false }
+    return $Path.ToLower().StartsWith($env:SystemRoot.ToLower().TrimEnd('\') + '\')
+}
+
+# A VPN tool started by a script or shortcut (.bat/.cmd/.ps1/.lnk): the script itself never
+# touches the network, the programs it starts do (e.g. xray_no_window.cmd -> .ps1 -> xray.exe).
+# Returns the existing .exe files it starts, following nested scripts 3 levels deep.
+# Windows' own programs (powershell, cmd...) are never returned.
+function Get-IKSScriptPrograms([string]$Path, [int]$Depth = 0) {
+    $found = @{}
+    if ($Depth -gt 3 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $full = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $dir = Split-Path $full -Parent
+    $ext = [IO.Path]::GetExtension($full).ToLower()
+    $refs = @()
+    if ($ext -eq '.exe') { $refs = @($full) }
+    elseif ($ext -eq '.lnk') {
+        try { $l = (New-Object -ComObject WScript.Shell).CreateShortcut($full); $refs = @($l.TargetPath) + @([regex]::Matches("$($l.Arguments)", '(?i)"[^"]+\.(?:exe|bat|cmd|ps1)"|[^\s"]+\.(?:exe|bat|cmd|ps1)\b') | ForEach-Object { $_.Value })
+              if ($l.WorkingDirectory) { $dir = $l.WorkingDirectory } } catch { }
+    } elseif ($ext -in '.bat', '.cmd', '.ps1') {
+        $text = try { [IO.File]::ReadAllText($full) } catch { '' }
+        $refs = @([regex]::Matches($text, '(?i)"[^"\r\n]+?\.(?:exe|bat|cmd|ps1)"|''[^''\r\n]+?\.(?:exe|bat|cmd|ps1)''|[^\s"''=,;()|&<>]+?\.(?:exe|bat|cmd|ps1)\b') | ForEach-Object { $_.Value })
+    }
+    foreach ($r in $refs) {
+        $p = "$r".Trim().Trim('"', "'")
+        if (-not $p) { continue }
+        $p = $p -replace '(?i)%~dp0\\?', ($dir + '\') -replace '(?i)\$PSScriptRoot\\?', ($dir + '\')
+        $p = [Environment]::ExpandEnvironmentVariables($p)
+        if (-not [IO.Path]::IsPathRooted($p)) { $p = Join-Path $dir ($p -replace '^\.[\\/]', '') }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }      # bare names on PATH are Windows tools: skipped
+        $p = (Resolve-Path -LiteralPath $p).ProviderPath
+        if ($p -eq $full) { continue }
+        if ($p -match '(?i)\.exe$') { if (-not (Test-IKSSystemPath $p)) { $found[$p.ToLower()] = $true } }
+        else { foreach ($e in (Get-IKSScriptPrograms $p ($Depth + 1))) { $found[$e] = $true } }
+    }
+    return @($found.Keys | Sort-Object)
+}
+
 # Keeps the user's own entries, refreshes the automatic ones. Entry: { Path, Name, Source = auto|user|child }
-# Child programs are followed on every call (cheap), even with -NoScan.
+# Child programs are followed on every call (cheap), even with -NoScan, and stay allowed
+# only while they are running (a one-off tool started once must not stay allowed forever).
+# Entries under %SystemRoot% are dropped (older versions let the user add powershell.exe).
 function Update-IKSVpnApps($Settings, [switch]$NoScan) {
+    $running = @{}
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { try { if ($p.Path) { $running[$p.Path.ToLower()] = $true } } catch { } }
     $list = @{}
     foreach ($a in $Settings.VpnApps) {
-        if ($a.Source -in 'user', 'child' -or $NoScan) { $list[$a.Path.ToLower()] = [pscustomobject]@{ Path = $a.Path; Name = $a.Name; Source = $a.Source } }
+        $k = "$($a.Path)".ToLower()
+        if (Test-IKSSystemPath $k) {
+            if (-not $script:IKSDroppedSystem) { $script:IKSDroppedSystem = @{} }
+            if (-not $script:IKSDroppedSystem.ContainsKey($k)) { $script:IKSDroppedSystem[$k] = $true; Write-IKSLog "Unsafe allowed app dropped (Windows program, would let every script bypass): $k" 'WARN' }
+            continue
+        }
+        if ($a.Source -eq 'child' -and -not $running.ContainsKey($k)) { continue }
+        if ($a.Source -in 'user', 'child' -or $NoScan) { $list[$k] = [pscustomobject]@{ Path = $a.Path; Name = $a.Name; Source = $a.Source } }
     }
     if (-not $NoScan) {
         $auto = Find-IKSVpnApps
@@ -245,6 +297,48 @@ function Get-IKSTunnelAdapters {
     return $out
 }
 
+# Which VPN client is REALLY carrying the traffic, from evidence only (never a guess from
+# "running apps"): the process that holds TCP connections to a foreign server over the real
+# network card (the encrypted tunnel to the VPN server), or that owns the local proxy port.
+# The name shown is its top ancestor that is not part of Windows (xray -> v2rayN).
+# '' when nothing proves it (e.g. a UDP-only WireGuard): the GUI then shows no name.
+function Select-IKSVpnClient([int[]]$Pids, $Procs) {
+    foreach ($procId in $Pids) {
+        if (-not $Procs.ContainsKey($procId)) { continue }
+        $p = $Procs[$procId]
+        if (Test-IKSSystemPath $p.Path) { continue }
+        $depth = 0
+        while ($depth -lt 4 -and $p.Parent -and $Procs.ContainsKey([int]$p.Parent)) {
+            $pp = $Procs[[int]$p.Parent]
+            if (-not $pp.Path -or (Test-IKSSystemPath $pp.Path) -or $pp.Name -match '(?i)^explorer') { break }
+            $p = $pp; $depth++
+        }
+        return $p.Name
+    }
+    return ''
+}
+
+function Get-IKSActiveVpnClient([string]$Proxy) {
+    try {
+        $phys = Get-IKSPhysicalInterface
+        $procs = @{}
+        foreach ($w in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+            $procs[[int]$w.ProcessId] = [pscustomobject]@{ Name = [IO.Path]::GetFileNameWithoutExtension("$($w.Name)"); Path = "$($w.ExecutablePath)"; Parent = [int]$w.ParentProcessId }
+        }
+        $pids = @()
+        if ($Proxy -match ':(\d+)$') {
+            $pids += @(Get-NetTCPConnection -State Listen -LocalPort ([int]$Matches[1]) -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.OwningProcess })
+        }
+        if ($phys) {
+            $iran = Read-IKSIranList
+            $pids += @(Get-NetTCPConnection -State Established -LocalAddress $phys.IPv4 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.RemoteAddress -notmatch '^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)' -and -not (Test-IKSInRanges $_.RemoteAddress $iran) } |
+                       Group-Object OwningProcess | Sort-Object Count -Descending | ForEach-Object { [int]$_.Name })
+        }
+        return Select-IKSVpnClient @($pids | Select-Object -Unique) $procs
+    } catch { return '' }
+}
+
 # Real internet interface = best IPv4 default route that is not a tunnel
 function Get-IKSPhysicalInterface {
     $tun = @(Get-IKSTunnelAdapters | ForEach-Object { $_.ifIndex })
@@ -259,13 +353,15 @@ function Get-IKSPhysicalInterface {
     return $null
 }
 
-# TAP adapters look like Ethernet, so their addresses are remembered and exempted by address
+# Tunnel addresses are remembered and exempted by LOCAL address too: TAP adapters look like
+# Ethernet, and for wintun/sing-tun the interface-type rule alone misses unconnected UDP
+# sockets (DNS, WebRTC/STUN), which WFP classifies before the interface is known.
 function Update-IKSLearnedTunnels($Settings) {
     $now = (Get-Date).ToString('s')
     $map = @{}
     foreach ($t in $Settings.LearnedTunnels) { if ((Get-IKSAgeDays $t.LastSeen) -le $script:IKS.TunnelKeepDays) { $map[$t.Ip] = $t.LastSeen } }
     $phys = Get-IKSPhysicalInterface
-    foreach ($a in @(Get-IKSTunnelAdapters | Where-Object { $_.IsTap })) {
+    foreach ($a in @(Get-IKSTunnelAdapters)) {
         foreach ($ip in $a.IPv4) { if (-not $phys -or $ip -ne $phys.IPv4) { $map[$ip] = $now } }   # never exempt the real NIC
     }
     $Settings.LearnedTunnels = @($map.Keys | Sort-Object | ForEach-Object { [pscustomobject]@{ Ip = $_; LastSeen = $map[$_] } })
@@ -338,11 +434,22 @@ function Sync-IKSProxyBypass([bool]$Enabled) {
     return "set $($want.Count) entries"
 }
 
-# First local proxy port that is listening (proxy-mode VPN clients)
+# Local proxy port of the VPN client in use. The Windows proxy wins when it points to a local
+# port that is listening (several clients may listen at once: Hiddify 12334 + v2rayN 10808);
+# otherwise the first known port that is listening.
+function Get-IKSProxyPort([string]$Server) {
+    # "127.0.0.1:10808" | "http=127.0.0.1:10808;https=..." | "socks=localhost:1080"
+    foreach ($part in "$Server".Split(';')) {
+        if ($part -match '(?i)^(?:[a-z]+=)?(?:https?://)?(127\.0\.0\.1|localhost|\[::1\]):(\d+)$') { return [int]$Matches[2] }
+    }
+    return $null
+}
 function Get-IKSLocalProxy {
     try {
         $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
                     Where-Object { $_.LocalAddress -in @('127.0.0.1', '0.0.0.0', '::') } | ForEach-Object { $_.LocalPort })
+        $sys = Get-IKSSystemProxy
+        if ($sys.Enabled) { $port = Get-IKSProxyPort $sys.Server; if ($port -and $listen -contains $port) { return "http://127.0.0.1:$port" } }
         foreach ($p in $script:IKS.LocalProxyPorts) { if ($listen -contains $p) { return "http://127.0.0.1:$p" } }
     } catch { }
     return $null

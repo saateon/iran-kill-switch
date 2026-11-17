@@ -33,7 +33,8 @@ function Test-IKSUdp([string]$From, [string]$To, [int]$Port, [byte[]]$Payload, [
         $null = $sock.SendTo($Payload, (New-Object Net.IPEndPoint([Net.IPAddress]::Parse($To), $Port)))
         $buf = New-Object byte[] 1500
         $n = $sock.Receive($buf)
-        return @{ Answered = $n -gt 0; Why = "answered ($n bytes)" }
+        $data = New-Object byte[] $n; [Array]::Copy($buf, $data, $n)
+        return @{ Answered = $n -gt 0; Why = "answered ($n bytes)"; Data = $data }
     } catch { return @{ Answered = $false; Why = (Get-IKSSocketError $_) } }
     finally { $sock.Close() }
 }
@@ -64,7 +65,122 @@ function Resolve-IKSIPv4Many([string[]]$Names, [int]$Ms = 3000) {
     return $out
 }
 
+function New-IKSStunRequest {
+    return [byte[]](@(0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42) + @(1..12 | ForEach-Object { Get-Random -Maximum 256 }))
+}
+
+# The public IPv4 a STUN server saw (= what WebRTC shows to websites); '' if none.
+# Reads XOR-MAPPED-ADDRESS (0x0020), falls back to MAPPED-ADDRESS (0x0001).
+function Get-IKSStunMappedIp([byte[]]$Data) {
+    if (-not $Data -or $Data.Length -lt 20) { return '' }
+    $len = $Data[2] * 256 + $Data[3]
+    $i = 20; $end = [Math]::Min($Data.Length, 20 + $len); $plain = ''
+    while ($i + 4 -le $end) {
+        $type = $Data[$i] * 256 + $Data[$i + 1]; $alen = $Data[$i + 2] * 256 + $Data[$i + 3]; $v = $i + 4
+        if ($alen -ge 8 -and $v + 8 -le $Data.Length -and $Data[$v + 1] -eq 1) {
+            if ($type -eq 0x0020) { return '{0}.{1}.{2}.{3}' -f ($Data[$v + 4] -bxor 0x21), ($Data[$v + 5] -bxor 0x12), ($Data[$v + 6] -bxor 0xA4), ($Data[$v + 7] -bxor 0x42) }
+            if ($type -eq 0x0001) { $plain = '{0}.{1}.{2}.{3}' -f $Data[$v + 4], $Data[$v + 5], $Data[$v + 6], $Data[$v + 7] }
+        }
+        $i = $v + $alen + ((4 - $alen % 4) % 4)
+    }
+    return $plain
+}
+
 function Resolve-IKSIPv4([string]$Name) { return @((Resolve-IKSIPv4Many @($Name))[$Name]) }
+
+# ---- live latency (the "ping" in the main window) --------------------------
+# TCP handshake time, not ICMP: it is what an app actually waits for, and ICMP is often dropped.
+function Measure-IKSTcpMs([string]$To, [int]$Port = 443, [int]$Ms = 2000) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $r = Test-IKSTcp $null $To $Port $Ms
+    if ($r.Ok) { return [int]$sw.ElapsedMilliseconds }
+    return $null
+}
+
+# Reads one HTTP answer head (up to the blank line). $true when it is an HTTP answer.
+function Read-IKSHttpHead($Stream) {
+    $buf = New-Object byte[] 1024; $text = ''
+    while ($text -notmatch "`r`n`r`n") {
+        $n = $Stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { break }
+        $text += [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+        if ($text.Length -gt 16384) { break }
+    }
+    return ($text -match '^HTTP/1\.[01] \d{3}')
+}
+
+# Ping inside the tunnel, measured the way VPN clients do: the connection through the tunnel is
+# opened first (warm-up request), then ONE request on that same connection is timed - the pure
+# round trip you -> VPN server -> site -> back, without connection set-up.
+# Falls back to the warm-up time when the site closes the connection after one answer.
+function Measure-IKSWarmRtt($Stream, [string]$HostName) {
+    $head = [Text.Encoding]::ASCII.GetBytes("HEAD / HTTP/1.1`r`nHost: $HostName`r`nConnection: keep-alive`r`n`r`n")
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $Stream.Write($head, 0, $head.Length)
+    if (-not (Read-IKSHttpHead $Stream)) { return $null }
+    $first = [int]$sw.ElapsedMilliseconds
+    try {
+        $sw.Restart()
+        $Stream.Write($head, 0, $head.Length)
+        if (Read-IKSHttpHead $Stream) { return [int]$sw.ElapsedMilliseconds }
+    } catch { }
+    return $first
+}
+
+# TUN mode: sing-tun / tun2socks complete the TCP handshake locally (a fake ~10 ms), so only
+# answers from the far end count.
+function Measure-IKSHttpMs([string]$To, [int]$Port = 80, [int]$Ms = 5000) {
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect($To, $Port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
+        $c.EndConnect($ar)
+        $st = $c.GetStream(); $st.ReadTimeout = $Ms
+        return Measure-IKSWarmRtt $st $To
+    } catch { return $null }
+    finally { $c.Close() }
+}
+
+# Proxy mode: CONNECT through the VPN's local proxy, then the same warm round trip inside it.
+# (sing-box answers the CONNECT with 200 before dialling, so the 200 itself measures nothing.)
+function Measure-IKSProxyMs([string]$Proxy, [string]$Target = '1.1.1.1:80', [int]$Ms = 5000) {
+    if ($Proxy -notmatch '^(?:https?://)?([^:/]+):(\d+)') { return $null }
+    $proxyHost = $Matches[1]; $port = [int]$Matches[2]
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect($proxyHost, $port, $null, $null)
+        if (-not $ar.AsyncWaitHandle.WaitOne($Ms)) { return $null }
+        $c.EndConnect($ar)
+        $st = $c.GetStream(); $st.ReadTimeout = $Ms
+        $req = [Text.Encoding]::ASCII.GetBytes("CONNECT $Target HTTP/1.1`r`nHost: $Target`r`n`r`n")
+        $st.Write($req, 0, $req.Length)
+        if (-not (Read-IKSHttpHead $st)) { return $null }
+        return Measure-IKSWarmRtt $st ($Target.Split(':')[0])
+    } catch { return $null }
+    finally { $c.Close() }
+}
+
+# One measurement for the main window. IranIp is cached by the caller (resolved once).
+function Get-IKSLatency([string]$Mode, [string]$Proxy, [string]$IranIp) {
+    $vpn = switch ($Mode) { 'proxy' { Measure-IKSProxyMs $Proxy } 'tun' { Measure-IKSHttpMs '1.1.1.1' 80 5000 } default { $null } }
+    if (-not $IranIp) {
+        $iran = Read-IKSIranList
+        $dns = Resolve-IKSIPv4Many @('www.aparat.com', 'www.digikala.com', 'www.varzesh3.com') 2000
+        $IranIp = @($dns.Values | ForEach-Object { $_ } | Where-Object { $_ -and (Test-IKSInRanges $_ $iran) })[0]
+    }
+    $ir = if ($IranIp) { Measure-IKSTcpMs $IranIp 443 } else { $null }
+    [pscustomobject]@{ Vpn = $vpn; Iran = $ir; IranIp = "$IranIp"; Mode = $Mode }
+}
+
+# Colour of a ping: good < 300 ms, ok < 1000 ms, slow above, down = no answer
+function Get-IKSPingLevel($Ms) {
+    if ($null -eq $Ms) { return 'down' }
+    if ($Ms -lt 300) { return 'good' }
+    if ($Ms -lt 1000) { return 'ok' }
+    return 'slow'
+}
+
+function Format-IKSMs($Ms) { if ($null -eq $Ms) { 'timeout' } else { "$Ms ms" } }
 
 function Invoke-IKSTest {
     $res = New-Object System.Collections.Generic.List[object]
@@ -116,10 +232,24 @@ function Invoke-IKSTest {
     # 5. WebRTC leak: a STUN answer outside the tunnel would reveal the real IP
     $stun = $dns['stun.l.google.com'] | Where-Object { -not (Test-IKSInRanges $_ $iran) } | Select-Object -First 1
     if ($stun) {
-        $pkt = [byte[]](@(0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42) + @(1..12 | ForEach-Object { Get-Random -Maximum 256 }))
-        $r = Test-IKSUdp $src $stun 19302 $pkt
+        $r = Test-IKSUdp $src $stun 19302 (New-IKSStunRequest)
         & $add 'WebRTC leak' $(if ($r.Answered) { 'FAIL' } else { 'PASS' }) "STUN $stun outside VPN: $($r.Why)"
     } else { & $add 'WebRTC leak' 'SKIP' 'STUN server could not be resolved' }
+
+    # 5b. What WebRTC shows to websites through the VPN (UDP never goes through a proxy)
+    $w = 'WebRTC shows the VPN IP'
+    if ($st.VpnMode -eq 'proxy') {
+        & $add $w 'INFO' 'Your VPN is in proxy mode. Browsers cannot send WebRTC (UDP) through a proxy, so it is blocked - no leak, but sites show n/a. To see the VPN IP there, switch the VPN app to TUN / VPN mode (Hiddify: VPN mode).'
+    } elseif ($st.VpnMode -ne 'tun') { & $add $w 'SKIP' 'VPN not connected.' }
+    elseif (-not $stun) { & $add $w 'SKIP' 'STUN server could not be resolved' }
+    else {
+        $r = Test-IKSUdp $null $stun 19302 (New-IKSStunRequest) 4000
+        $seen = Get-IKSStunMappedIp $r.Data
+        if (-not $r.Answered) { & $add $w 'INFO' "No STUN answer through the tunnel ($($r.Why)): the VPN server may not carry UDP, so WebRTC shows n/a." }
+        elseif (-not $seen) { & $add $w 'INFO' 'STUN answered without an address.' }
+        elseif (Test-IKSInRanges $seen $iran) { & $add $w 'FAIL' "WebRTC shows the Iranian IP $seen - UDP is not using the VPN." }
+        else { & $add $w 'PASS' "WebRTC shows $seen (through the tunnel)" }
+    }
 
     # 6. IPv6 leak
     # bound to the real adapter's public IPv6 (IPv6 inside a VPN tunnel is allowed and is not a leak)

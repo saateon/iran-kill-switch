@@ -24,7 +24,10 @@ function Skip([string]$Name, [string]$Why) { $script:skip++; Say "  SKIP  $Name 
 function Rng([string]$t) { return , (ConvertTo-IKSRange $t) }
 function L([object[]]$pairs) { $l = New-IKSRangeList; foreach ($p in $pairs) { $l.Add([long[]]$p) }; return , $l }
 $MAX = [long]4294967295
-$curl = "$env:SystemRoot\System32\curl.exe"
+# A copy outside %SystemRoot% plays the VPN app (Windows' own programs can never be allowed)
+$sysCurl = "$env:SystemRoot\System32\curl.exe"
+$curlDir = Join-Path ([IO.Path]::GetTempPath()) "iks-curl-$PID"; New-Item -ItemType Directory -Force $curlDir | Out-Null
+$curl = Join-Path $curlDir 'curl.exe'; Copy-Item $sysCurl $curl -Force
 if ($Out) { Set-Content -Path $Out -Value "Iran Kill Switch tests $(Get-Date -f s)" -Encoding UTF8 }
 
 Say "`n[source files]"
@@ -144,6 +147,115 @@ Update-IKSVpnApps $st
 Check 'an app removed by the user is not re-added by the next scan' { $st.VpnApps.Path -notcontains $curl.ToLower() }
 Remove-Item Function:\Find-IKSVpnApps; . (Join-Path $root 'modules\Discovery.ps1')
 
+Say "`n[WebRTC: STUN answer parsing]"
+# Binding Success with SOFTWARE (odd length, padded) then XOR-MAPPED-ADDRESS 203.0.113.7:54321
+$xorIp = @((203 -bxor 0x21), (0 -bxor 0x12), (113 -bxor 0xA4), (7 -bxor 0x42)); $xorPort = @(((54321 -shr 8) -bxor 0x21), ((54321 -band 255) -bxor 0x12))
+$attrs = @(0x80, 0x22, 0, 3, 0x61, 0x62, 0x63, 0) + @(0, 0x20, 0, 8, 0, 1) + $xorPort + $xorIp
+$resp = [byte[]](@(1, 1, 0, $attrs.Count, 0x21, 0x12, 0xA4, 0x42) + @(1..12) + $attrs)
+Check 'XOR-MAPPED-ADDRESS decoded (after a padded attribute)' { (Get-IKSStunMappedIp $resp) -eq '203.0.113.7' }
+$plain = [byte[]](@(1, 1, 0, 12, 0x21, 0x12, 0xA4, 0x42) + @(1..12) + @(0, 1, 0, 8, 0, 1, 0x30, 0x39, 198, 51, 100, 9))
+Check 'old MAPPED-ADDRESS used as a fallback' { (Get-IKSStunMappedIp $plain) -eq '198.51.100.9' }
+Check 'short or empty answer -> no address' { (Get-IKSStunMappedIp ([byte[]](1, 1, 0))) -eq '' -and (Get-IKSStunMappedIp $null) -eq '' }
+Check 'STUN request is a 20-byte Binding Request with the magic cookie' { $q = New-IKSStunRequest; $q.Length -eq 20 -and $q[0] -eq 0 -and $q[1] -eq 1 -and $q[4] -eq 0x21 -and $q[7] -eq 0x42 }
+
+Say "`n[tunnel addresses (UDP through wintun / sing-tun)]"
+function Get-IKSTunnelAdapters { @([pscustomobject]@{ Name = 'tun0'; IfType = 53; IsTap = $false; IPv4 = @('172.19.0.1') }, [pscustomobject]@{ Name = 'tap'; IfType = 6; IsTap = $true; IPv4 = @('10.8.0.6', '192.168.1.50') }) }
+function Get-IKSPhysicalInterface { [pscustomobject]@{ ifIndex = 1; Alias = 'Wi-Fi'; IPv4 = '192.168.1.50'; Gateway = '192.168.1.1' } }
+$lt = @{ LearnedTunnels = @() }; Update-IKSLearnedTunnels $lt
+Check 'sing-tun / wintun address is learned (not only TAP)' { @($lt.LearnedTunnels.Ip) -contains '172.19.0.1' -and @($lt.LearnedTunnels.Ip) -contains '10.8.0.6' }
+Check 'the real network card address is never exempted' { @($lt.LearnedTunnels.Ip) -notcontains '192.168.1.50' }
+Remove-Item Function:\Get-IKSTunnelAdapters, Function:\Get-IKSPhysicalInterface; . (Join-Path $root 'modules\Discovery.ps1')
+
+Say "`n[VPN tools started by a script or shortcut]"
+$sd = Join-Path ([IO.Path]::GetTempPath()) "iks-script-$PID"; New-Item -ItemType Directory -Force (Join-Path $sd 'bin') | Out-Null
+try {
+    Copy-Item $curl (Join-Path $sd 'xray.exe'); Copy-Item $curl (Join-Path $sd 'bin\tun2socks.exe')
+    Set-Content (Join-Path $sd 'start.cmd') 'powershell.exe -ExecutionPolicy Bypass -File ".\start.ps1"' -Encoding ascii
+    Set-Content (Join-Path $sd 'start.ps1') 'Start-Process -FilePath ".\xray.exe" -ArgumentList "-config .\config.json" -WindowStyle Hidden' -Encoding ascii
+    Set-Content (Join-Path $sd 'other.bat') "@echo off`r`nstart `"`" `"%~dp0bin\tun2socks.exe`" -device x`r`ncurl.exe http://example.com" -Encoding ascii
+    Set-Content (Join-Path $sd 'only-ps.cmd') 'powershell -NoProfile -Command "Invoke-WebRequest http://example.com"' -Encoding ascii
+    $xr = (Join-Path $sd 'xray.exe').ToLower()
+    Check 'cmd -> ps1 -> xray.exe: xray.exe found, PowerShell is not' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'start.cmd')); $r.Count -eq 1 -and $r[0] -eq $xr }
+    Check '%~dp0 path in a .bat is resolved; bare curl.exe (Windows) skipped' { $r = @(Get-IKSScriptPrograms (Join-Path $sd 'other.bat')); $r.Count -eq 1 -and $r[0] -eq (Join-Path $sd 'bin\tun2socks.exe').ToLower() }
+    Check 'a script that only runs PowerShell gives no .exe' { @(Get-IKSScriptPrograms (Join-Path $sd 'only-ps.cmd')).Count -eq 0 }
+    Set-Content (Join-Path $sd 'Hub.bat') "@echo off`r`nstart `"`" powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"%~dp0windows\Start.ps1`" %*" -Encoding ascii
+    Check 'PowerShell arguments of a .bat: %~dp0 made absolute, %* dropped' { (Get-IKSPowerShellArgs (Join-Path $sd 'Hub.bat')) -eq "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$sd\windows\Start.ps1`"" }
+    $lnkDir = Join-Path $sd 'desk'; New-Item -ItemType Directory -Force $lnkDir | Out-Null
+    $la = New-IKSScriptLauncher (Join-Path $sd 'Hub.bat') $lnkDir
+    Check 'pure-PowerShell tool -> private PowerShell copy (not Windows'' own) + shortcut' {
+        $la -and (Test-Path $la.Exe) -and -not (Test-IKSSystemPath $la.Exe) -and $la.Exe.StartsWith($script:IKS.StateDir.ToLower()) -and (Test-Path $la.Shortcut) -and
+        ((New-Object -ComObject WScript.Shell).CreateShortcut($la.Shortcut).TargetPath -eq (Get-Item $la.Exe).FullName) }
+    Set-Content (Join-Path $sd 'cmd-only.bat') "@echo off`r`nping 127.0.0.1" -Encoding ascii
+    Check 'a script with neither a program nor PowerShell is refused with a clear reason' { try { $null = Add-IKSVpnApp (Join-Path $sd 'cmd-only.bat') $lnkDir; $false } catch { "$_" -match 'No VPN program was found' } }
+    $lnk = Join-Path $sd 'Start VPN.lnk'
+    $w = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk); $w.TargetPath = (Join-Path $sd 'start.cmd'); $w.WorkingDirectory = $sd; $w.Save()
+    Check 'shortcut -> cmd -> ps1 -> xray.exe' { @(Get-IKSScriptPrograms $lnk) -contains $xr }
+} finally { Remove-Item $sd -Recurse -Force -ErrorAction SilentlyContinue }
+
+Say "`n[live ping]"
+# A tiny fake VPN proxy on loopback that answers CONNECT with 200
+$fl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $fl.Start(); $fport = $fl.LocalEndpoint.Port
+$fake = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 256; $null = $s.Read($b, 0, 256)
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 Connection established`r`n`r`n"); $s.Write($r, 0, $r.Length)
+    $null = $s.Read($b, 0, 256)     # the HEAD request inside the tunnel
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n"); $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 300; $c.Close() }).AddArgument($fl)
+$fh = $fake.BeginInvoke()
+try {
+    $ms = Measure-IKSProxyMs "http://127.0.0.1:$fport"
+    Check "proxy round trip measured through CONNECT ($ms ms)" { $null -ne $ms -and $ms -ge 0 -and $ms -lt 3000 }
+} finally { $null = $fh.AsyncWaitHandle.WaitOne(3000); $fake.Dispose(); $fl.Stop() }
+$dl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $dl.Start(); $dport = $dl.LocalEndpoint.Port; $dl.Stop()
+Check 'proxy that is not running -> timeout, no error' { $null -eq (Measure-IKSProxyMs "http://127.0.0.1:$dport" '1.1.1.1:443' 800) }
+Check 'bad proxy text -> timeout, no error' { $null -eq (Measure-IKSProxyMs 'nonsense') -and $null -eq (Measure-IKSProxyMs '') }
+$hl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $hl.Start(); $hport = $hl.LocalEndpoint.Port
+$hs = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 256; $null = $s.Read($b, 0, 256); Start-Sleep -Milliseconds 120
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n"); $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 200; $c.Close() }).AddArgument($hl)
+$hh = $hs.BeginInvoke()
+try { $hm = Measure-IKSHttpMs '127.0.0.1' $hport 3000; Check "TUN ping waits for the far end's answer, not the handshake ($hm ms)" { $null -ne $hm -and $hm -ge 100 } }
+finally { $null = $hh.AsyncWaitHandle.WaitOne(3000); $hs.Dispose(); $hl.Stop() }
+Check 'TCP handshake time on loopback' { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); try { $m = Measure-IKSTcpMs '127.0.0.1' $l.LocalEndpoint.Port; $null -ne $m -and $m -lt 1000 } finally { $l.Stop() } }
+# keep-alive server: first answer slow (connection set-up through a tunnel), second fast
+$kl = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $kl.Start(); $kport = $kl.LocalEndpoint.Port
+$ks = [PowerShell]::Create().AddScript({ param($l)
+    $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $b = New-Object byte[] 512
+    $r = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 301 Moved`r`nContent-Length: 0`r`n`r`n")
+    $null = $s.Read($b, 0, 512); Start-Sleep -Milliseconds 400; $s.Write($r, 0, $r.Length)
+    $null = $s.Read($b, 0, 512); Start-Sleep -Milliseconds 30; $s.Write($r, 0, $r.Length); Start-Sleep -Milliseconds 200; $c.Close() }).AddArgument($kl)
+$kh = $ks.BeginInvoke()
+try { $km = Measure-IKSHttpMs '127.0.0.1' $kport 3000; Check "ping = round trip on an open connection, not set-up ($km ms, set-up was 400)" { $null -ne $km -and $km -ge 25 -and $km -lt 300 } }
+finally { $null = $kh.AsyncWaitHandle.WaitOne(3000); $ks.Dispose(); $kl.Stop() }
+
+Say "`n[which VPN client is really in use]"
+$tree = @{ 10 = [pscustomobject]@{ Name = 'xray'; Path = 'c:\app\v2rayn\bin\xray\xray.exe'; Parent = 20 }
+           20 = [pscustomobject]@{ Name = 'v2rayN'; Path = 'c:\app\v2rayn\v2rayn.exe'; Parent = 30 }
+           30 = [pscustomobject]@{ Name = 'explorer'; Path = "$env:SystemRoot\explorer.exe"; Parent = 4 }
+           40 = [pscustomobject]@{ Name = 'svchost'; Path = "$env:SystemRoot\System32\svchost.exe"; Parent = 4 } }
+Check 'the core holding the tunnel connection is named after its app (xray -> v2rayN)' { (Select-IKSVpnClient @(10) $tree) -eq 'v2rayN' }
+Check 'Windows processes are skipped; no evidence -> no name' { (Select-IKSVpnClient @(40, 10) $tree) -eq 'v2rayN' -and (Select-IKSVpnClient @(40) $tree) -eq '' -and (Select-IKSVpnClient @() $tree) -eq '' }
+Check 'Windows proxy setting parsed (plain, per-protocol, socks)' { (Get-IKSProxyPort '127.0.0.1:10808') -eq 10808 -and (Get-IKSProxyPort 'http=127.0.0.1:12334;https=127.0.0.1:12334') -eq 12334 -and (Get-IKSProxyPort 'socks=localhost:1080') -eq 1080 -and $null -eq (Get-IKSProxyPort 'proxy.corp.com:8080') }
+Check 'ping colours: good / ok / slow / down' { (Get-IKSPingLevel 42) -eq 'good' -and (Get-IKSPingLevel 800) -eq 'ok' -and (Get-IKSPingLevel 1057) -eq 'slow' -and (Get-IKSPingLevel $null) -eq 'down' }
+Check 'no VPN -> no VPN ping; formatting' { $r = Get-IKSLatency 'none' '' '127.0.0.1'; $null -eq $r.Vpn -and (Format-IKSMs $null) -eq 'timeout' -and (Format-IKSMs 42) -eq '42 ms' }
+
+Say "`n[auto-keep after Enable]"
+$okRows = @([pscustomobject]@{ Test = 'Foreign traffic blocked when VPN is down'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'SKIP' })
+Check 'all passed + Iran reachable -> kept without asking' { Test-IKSAutoKeep $okRows }
+Check 'any failed check -> ask the user' { -not (Test-IKSAutoKeep (@($okRows) + [pscustomobject]@{ Test = 'DNS leak'; Result = 'FAIL' })) }
+Check 'Iran not proven reachable -> ask the user' { -not (Test-IKSAutoKeep @($okRows | Where-Object { $_.Test -ne 'Iranian sites work directly' })) }
+Check 'no test result -> ask the user' { -not (Test-IKSAutoKeep @()) -and -not (Test-IKSAutoKeep $null) }
+
+Say "`n[Windows programs are never allowed]"
+Check 'a Windows path is recognised (powershell, curl)' { (Test-IKSSystemPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe") -and (Test-IKSSystemPath $sysCurl) -and -not (Test-IKSSystemPath $curl) -and -not (Test-IKSSystemPath "$env:SystemDrive\WindowsApps\x.exe") }
+Check 'adding powershell.exe is refused' { try { Add-IKSVpnApp "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"; $false } catch { "$_" -match 'part of Windows' } }
+$st = @{ VpnApps = @([pscustomobject]@{ Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe".ToLower(); Name = 'powershell'; Source = 'user' },
+                     [pscustomobject]@{ Path = $curl.ToLower(); Name = 'curl'; Source = 'user' }); IgnoredApps = @() }
+Update-IKSVpnApps $st -NoScan
+Check 'an old powershell.exe entry is dropped, other user apps stay' { ($st.VpnApps.Path -notcontains "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe".ToLower()) -and ($st.VpnApps.Path -contains $curl.ToLower()) }
+$st = @{ VpnApps = @([pscustomobject]@{ Path = 'c:\nowhere\oneoff.exe'; Name = 'oneoff (via x)'; Source = 'child' }); IgnoredApps = @() }
+Update-IKSVpnApps $st -NoScan
+Check 'a helper that is no longer running is no longer allowed' { @($st.VpnApps).Count -eq 0 }
+
 Say "`n[helper processes of allowed apps]"
 $hd = Join-Path ([IO.Path]::GetTempPath()) "iks-child-$PID"; New-Item -ItemType Directory -Force $hd | Out-Null
 $parentExe = Join-Path $hd 'vpnparent.exe'; $childExe = Join-Path $hd 'vpnhelper.exe'
@@ -237,7 +349,8 @@ if (-not $guiRunning) {
         $el = [Windows.Automation.AutomationElement]::FromHandle($h)
         $texts = @($el.FindAll('Descendants', [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
         Check "footer shows 'Made by Mansoor' and v$($script:IKS.Version)" { [bool]($texts | Where-Object { $_ -match "Made by Mansoor" -and $_ -match [regex]::Escape("v$($script:IKS.Version)") }) }
-        Check 'VPN apps row and Iran direct switch present' { ($texts -contains 'VPN apps') -and ($texts -contains 'Iran direct (TUN)') }
+        Check 'Allowed apps row, Iran direct switch and both ping cards present' {
+            ($texts -contains 'Allowed apps') -and ($texts -contains 'Iran direct (TUN)') -and ($texts -contains 'VPN PING') -and ($texts -contains 'DIRECT PING') }
         [void][IKSTest.W]::ShowWindow($h, 6); Start-Sleep 1
         $g2 = Start-Process powershell -ArgumentList $gargs -PassThru -WindowStyle Hidden; $null = $g2.WaitForExit(15000); Start-Sleep 1
         Check 'second launch exits and restores the first window' { $g2.HasExited -and -not [IKSTest.W]::IsIconic($h) }
@@ -291,5 +404,6 @@ if ($WfpLive) {
 }
 
 Remove-Item $tmpState -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $curlDir -Recurse -Force -ErrorAction SilentlyContinue
 Say "`nResult: $script:pass passed, $script:fail failed, $script:skip skipped" $(if ($script:fail) { 'Red' } else { 'Green' })
 exit $(if ($script:fail) { 1 } else { 0 })
