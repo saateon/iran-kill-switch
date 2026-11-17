@@ -147,6 +147,17 @@ Update-IKSVpnApps $st
 Check 'an app removed by the user is not re-added by the next scan' { $st.VpnApps.Path -notcontains $curl.ToLower() }
 Remove-Item Function:\Find-IKSVpnApps; . (Join-Path $root 'modules\Discovery.ps1')
 
+Say "`n[WebRTC: STUN answer parsing]"
+# Binding Success with SOFTWARE (odd length, padded) then XOR-MAPPED-ADDRESS 203.0.113.7:54321
+$xorIp = @((203 -bxor 0x21), (0 -bxor 0x12), (113 -bxor 0xA4), (7 -bxor 0x42)); $xorPort = @(((54321 -shr 8) -bxor 0x21), ((54321 -band 255) -bxor 0x12))
+$attrs = @(0x80, 0x22, 0, 3, 0x61, 0x62, 0x63, 0) + @(0, 0x20, 0, 8, 0, 1) + $xorPort + $xorIp
+$resp = [byte[]](@(1, 1, 0, $attrs.Count, 0x21, 0x12, 0xA4, 0x42) + @(1..12) + $attrs)
+Check 'XOR-MAPPED-ADDRESS decoded (after a padded attribute)' { (Get-IKSStunMappedIp $resp) -eq '203.0.113.7' }
+$plain = [byte[]](@(1, 1, 0, 12, 0x21, 0x12, 0xA4, 0x42) + @(1..12) + @(0, 1, 0, 8, 0, 1, 0x30, 0x39, 198, 51, 100, 9))
+Check 'old MAPPED-ADDRESS used as a fallback' { (Get-IKSStunMappedIp $plain) -eq '198.51.100.9' }
+Check 'short or empty answer -> no address' { (Get-IKSStunMappedIp ([byte[]](1, 1, 0))) -eq '' -and (Get-IKSStunMappedIp $null) -eq '' }
+Check 'STUN request is a 20-byte Binding Request with the magic cookie' { $q = New-IKSStunRequest; $q.Length -eq 20 -and $q[0] -eq 0 -and $q[1] -eq 1 -and $q[4] -eq 0x21 -and $q[7] -eq 0x42 }
+
 Say "`n[auto-keep after Enable]"
 $okRows = @([pscustomobject]@{ Test = 'Foreign traffic blocked when VPN is down'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS' }, [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'SKIP' })
 Check 'all passed + Iran reachable -> kept without asking' { Test-IKSAutoKeep $okRows }

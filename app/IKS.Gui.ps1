@@ -486,7 +486,9 @@ function Render-Status($s) {
     if ($s.Enabled -and $s.RevertPending) { $c = $T.Amber; $ring = 'ON'; $hint = 'NOT CONFIRMED'; $h = 'Waiting for your confirmation'; $sub = 'Protection will be undone automatically unless you confirm it works.' }
     elseif ($s.Enabled -and $s.Healthy) {
         $c = $T.Green; $ring = 'ON'; $hint = 'PROTECTED'; $h = 'You are protected'
-        $sub = if ($s.VpnMode -eq 'none') { 'VPN is off: foreign sites are blocked, Iranian sites work normally.' } else { 'Foreign traffic only through the VPN. Iranian sites go direct.' }
+        $sub = if ($s.VpnMode -eq 'none') { 'VPN is off: foreign sites are blocked, Iranian sites work normally.' }
+               elseif ($s.VpnMode -eq 'proxy') { 'Proxy mode: WebRTC/UDP is blocked (shows n/a). Use TUN / VPN mode in your VPN app to cover it too.' }
+               else { 'Foreign traffic only through the VPN. Iranian sites go direct.' }
     } elseif ($s.Enabled) { $c = $T.Amber; $ring = 'ON'; $hint = 'ATTENTION'; $h = 'Needs attention'; $sub = $s.Problems[0] }
     else { $c = $T.Off; $ring = 'OFF'; $hint = 'CLICK TO TURN ON'; $h = 'Kill switch is off'; $sub = 'If the VPN drops, foreign traffic leaves with your real IP.' }
     if (-not $s.Enabled -and $s.Problems) { $sub = $s.Problems[0] }
@@ -770,6 +772,7 @@ if ($SelfTest) {
                         [pscustomobject]@{ Test = 'Iranian sites work directly'; Result = 'PASS'; Detail = 'www.aparat.com reached directly via Wi-Fi' },
                         [pscustomobject]@{ Test = 'DNS leak'; Result = 'PASS'; Detail = 'foreign DNS 8.8.8.8 outside VPN: no answer' },
                         [pscustomobject]@{ Test = 'WebRTC leak'; Result = 'PASS'; Detail = 'STUN outside VPN: no answer' },
+                        [pscustomobject]@{ Test = 'WebRTC shows the VPN IP'; Result = 'PASS'; Detail = 'WebRTC shows 203.0.113.10 (through the tunnel)' },
                         [pscustomobject]@{ Test = 'IPv6 leak'; Result = 'PASS'; Detail = 'no public IPv6 on the real adapter' },
                         [pscustomobject]@{ Test = 'Iranian sites bypass the VPN (TUN)'; Result = 'PASS'; Detail = 'www.aparat.com goes out via Wi-Fi, not the tunnel' },
                         [pscustomobject]@{ Test = 'Internet through VPN'; Result = 'PASS'; Detail = 'Foreign sites see 203.0.113.10 (tun mode)' })

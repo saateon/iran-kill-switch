@@ -33,7 +33,8 @@ function Test-IKSUdp([string]$From, [string]$To, [int]$Port, [byte[]]$Payload, [
         $null = $sock.SendTo($Payload, (New-Object Net.IPEndPoint([Net.IPAddress]::Parse($To), $Port)))
         $buf = New-Object byte[] 1500
         $n = $sock.Receive($buf)
-        return @{ Answered = $n -gt 0; Why = "answered ($n bytes)" }
+        $data = New-Object byte[] $n; [Array]::Copy($buf, $data, $n)
+        return @{ Answered = $n -gt 0; Why = "answered ($n bytes)"; Data = $data }
     } catch { return @{ Answered = $false; Why = (Get-IKSSocketError $_) } }
     finally { $sock.Close() }
 }
@@ -62,6 +63,27 @@ function Resolve-IKSIPv4Many([string[]]$Names, [int]$Ms = 3000) {
         }
     }
     return $out
+}
+
+function New-IKSStunRequest {
+    return [byte[]](@(0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42) + @(1..12 | ForEach-Object { Get-Random -Maximum 256 }))
+}
+
+# The public IPv4 a STUN server saw (= what WebRTC shows to websites); '' if none.
+# Reads XOR-MAPPED-ADDRESS (0x0020), falls back to MAPPED-ADDRESS (0x0001).
+function Get-IKSStunMappedIp([byte[]]$Data) {
+    if (-not $Data -or $Data.Length -lt 20) { return '' }
+    $len = $Data[2] * 256 + $Data[3]
+    $i = 20; $end = [Math]::Min($Data.Length, 20 + $len); $plain = ''
+    while ($i + 4 -le $end) {
+        $type = $Data[$i] * 256 + $Data[$i + 1]; $alen = $Data[$i + 2] * 256 + $Data[$i + 3]; $v = $i + 4
+        if ($alen -ge 8 -and $v + 8 -le $Data.Length -and $Data[$v + 1] -eq 1) {
+            if ($type -eq 0x0020) { return '{0}.{1}.{2}.{3}' -f ($Data[$v + 4] -bxor 0x21), ($Data[$v + 5] -bxor 0x12), ($Data[$v + 6] -bxor 0xA4), ($Data[$v + 7] -bxor 0x42) }
+            if ($type -eq 0x0001) { $plain = '{0}.{1}.{2}.{3}' -f $Data[$v + 4], $Data[$v + 5], $Data[$v + 6], $Data[$v + 7] }
+        }
+        $i = $v + $alen + ((4 - $alen % 4) % 4)
+    }
+    return $plain
 }
 
 function Resolve-IKSIPv4([string]$Name) { return @((Resolve-IKSIPv4Many @($Name))[$Name]) }
@@ -116,10 +138,24 @@ function Invoke-IKSTest {
     # 5. WebRTC leak: a STUN answer outside the tunnel would reveal the real IP
     $stun = $dns['stun.l.google.com'] | Where-Object { -not (Test-IKSInRanges $_ $iran) } | Select-Object -First 1
     if ($stun) {
-        $pkt = [byte[]](@(0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42) + @(1..12 | ForEach-Object { Get-Random -Maximum 256 }))
-        $r = Test-IKSUdp $src $stun 19302 $pkt
+        $r = Test-IKSUdp $src $stun 19302 (New-IKSStunRequest)
         & $add 'WebRTC leak' $(if ($r.Answered) { 'FAIL' } else { 'PASS' }) "STUN $stun outside VPN: $($r.Why)"
     } else { & $add 'WebRTC leak' 'SKIP' 'STUN server could not be resolved' }
+
+    # 5b. What WebRTC shows to websites through the VPN (UDP never goes through a proxy)
+    $w = 'WebRTC shows the VPN IP'
+    if ($st.VpnMode -eq 'proxy') {
+        & $add $w 'INFO' 'Your VPN is in proxy mode. Browsers cannot send WebRTC (UDP) through a proxy, so it is blocked - no leak, but sites show n/a. To see the VPN IP there, switch the VPN app to TUN / VPN mode (Hiddify: VPN mode).'
+    } elseif ($st.VpnMode -ne 'tun') { & $add $w 'SKIP' 'VPN not connected.' }
+    elseif (-not $stun) { & $add $w 'SKIP' 'STUN server could not be resolved' }
+    else {
+        $r = Test-IKSUdp $null $stun 19302 (New-IKSStunRequest) 4000
+        $seen = Get-IKSStunMappedIp $r.Data
+        if (-not $r.Answered) { & $add $w 'INFO' "No STUN answer through the tunnel ($($r.Why)): the VPN server may not carry UDP, so WebRTC shows n/a." }
+        elseif (-not $seen) { & $add $w 'INFO' 'STUN answered without an address.' }
+        elseif (Test-IKSInRanges $seen $iran) { & $add $w 'FAIL' "WebRTC shows the Iranian IP $seen - UDP is not using the VPN." }
+        else { & $add $w 'PASS' "WebRTC shows $seen (through the tunnel)" }
+    }
 
     # 6. IPv6 leak
     # bound to the real adapter's public IPv6 (IPv6 inside a VPN tunnel is allowed and is not a leak)
